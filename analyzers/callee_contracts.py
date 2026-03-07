@@ -1286,5 +1286,6 @@ def _print_summary(contracts):
     if top:
         msg_info("  Most-shared utilities:")
         for c in top:
-            msg_info(f"    {c['function']}: {c['caller_count']} callers, "
-                     f"{'pure' if c.get('is_pure') else f\"{len(c.get('side_effects', []))} side effects\"}")
+            side = len(c.get('side_effects', []))
+            purity = 'pure' if c.get('is_pure') else f"{side} side effects"
+            msg_info(f"    {c['function']}: {c['caller_count']} callers, {purity}")
