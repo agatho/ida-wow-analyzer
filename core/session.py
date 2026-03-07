@@ -39,15 +39,24 @@ class PluginSession:
         # may have been created before the IDB was fully loaded).
         self.cfg._load()
 
+        # Always register UI actions first so menus work even if DB fails
+        self._register_actions()
+
         # 1. Open the knowledge database
         db_path = self.cfg.db_path
         if not db_path:
             msg_error("No IDB loaded — cannot determine database path")
+            self._initialized = True  # mark init done so menus still attach
             return
 
         msg_info(f"Knowledge DB: {db_path}")
-        self.db = KnowledgeDB(db_path)
-        self.db.open()
+        try:
+            self.db = KnowledgeDB(db_path)
+            self.db.open()
+        except Exception as e:
+            msg_error(f"Failed to open knowledge DB: {e}")
+            self._initialized = True
+            return
 
         # Log stats
         stats = self.db.get_stats()
@@ -57,14 +66,11 @@ class PluginSession:
             if count > 0:
                 msg(f"  {table}: {count}")
 
-        # 2. Register UI actions
-        self._register_actions()
-
-        # 3. Install hooks
+        # 2. Install hooks
         self.hooks = HookManager(self)
         self.hooks.install()
 
-        # 4. Auto-start scheduler if configured
+        # 3. Auto-start scheduler if configured
         self._start_scheduler_if_configured()
 
         self._init_time = time.time() - start
