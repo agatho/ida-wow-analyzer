@@ -74,11 +74,13 @@ def _find_python():
 
 
 def _find_idat64(ida_dir=None):
-    """Locate idat64 executable."""
+    """Locate idat/idat64 executable (IDA 9.x uses combined 'idat' binary)."""
     candidates = []
+    names = ("idat64.exe", "idat.exe", "idat64", "idat")
+
     if ida_dir:
-        candidates.append(os.path.join(ida_dir, "idat64.exe"))
-        candidates.append(os.path.join(ida_dir, "idat64"))
+        for n in names:
+            candidates.append(os.path.join(ida_dir, n))
 
     # Common install locations
     for base in [
@@ -89,8 +91,8 @@ def _find_idat64(ida_dir=None):
         os.path.expanduser("~/ida"),
     ]:
         if base:
-            candidates.append(os.path.join(base, "idat64.exe"))
-            candidates.append(os.path.join(base, "idat64"))
+            for n in names:
+                candidates.append(os.path.join(base, n))
 
     for c in candidates:
         if os.path.isfile(c):
@@ -407,11 +409,11 @@ def run_orchestrator(idb_path, idat_path, max_crashes=200, reopen_ida=False,
     if reopen_ida and success:
         gui_path = ida_gui_path
         if not gui_path:
-            # Derive from idat64 path
+            # Derive from idat path
             idat_dir = os.path.dirname(idat_path)
-            for name in ("ida64.exe", "ida64"):
+            for name in ("ida64.exe", "ida.exe", "ida64", "ida"):
                 candidate = os.path.join(idat_dir, name)
-                if os.path.isfile(candidate):
+                if os.path.isfile(candidate) and "idat" not in name.lower():
                     gui_path = candidate
                     break
 
@@ -465,7 +467,7 @@ def launch_headless_decompile(session, reopen_after=True, confirm=True):
     ida_dir = idaapi.idadir("")
     msg(f"  IDA dir: {ida_dir}")
     idat_path = None
-    for name in ("idat64.exe", "idat64"):
+    for name in ("idat64.exe", "idat.exe", "idat64", "idat"):
         candidate = os.path.join(ida_dir, name)
         if os.path.isfile(candidate):
             idat_path = candidate
@@ -498,7 +500,7 @@ def launch_headless_decompile(session, reopen_after=True, confirm=True):
 
     # Find ida64 GUI for reopening (ida_dir already set from idaapi.idadir)
     ida_gui_path = None
-    for name in ("ida64.exe", "ida64"):
+    for name in ("ida64.exe", "ida.exe", "ida64", "ida"):
         candidate = os.path.join(ida_dir, name)
         if os.path.isfile(candidate) and "idat" not in name.lower():
             ida_gui_path = candidate
