@@ -429,7 +429,7 @@ def run_orchestrator(idb_path, idat_path, max_crashes=200, reopen_ida=False,
     }
 
 
-def launch_headless_decompile(session, reopen_after=True):
+def launch_headless_decompile(session, reopen_after=True, confirm=True):
     """Launch headless decompilation from within the IDA GUI plugin.
 
     This function:
@@ -444,6 +444,7 @@ def launch_headless_decompile(session, reopen_after=True):
     Args:
         session: PluginSession
         reopen_after: Reopen IDA GUI after headless decompilation completes
+        confirm: Show confirmation dialog (False when called from batch safety gate)
 
     Returns:
         True if orchestrator was launched successfully
@@ -462,6 +463,7 @@ def launch_headless_decompile(session, reopen_after=True):
     # Find idat64 next to current IDA installation
     # sys.executable inside IDA is ida64.exe, not python.exe — use idadir()
     ida_dir = idaapi.idadir("")
+    msg(f"  IDA dir: {ida_dir}")
     idat_path = None
     for name in ("idat64.exe", "idat64"):
         candidate = os.path.join(ida_dir, name)
@@ -473,21 +475,22 @@ def launch_headless_decompile(session, reopen_after=True):
         idat_path = _find_idat64()
 
     if not idat_path:
-        msg_error("Cannot find idat64 — please configure ida_path in settings")
+        msg_error(f"Cannot find idat64 in '{ida_dir}' or common locations. "
+                  "Set IDADIR environment variable to your IDA install directory.")
         return False
 
-    # Confirm with user
-    if not ask_yes_no(
-        "Run mass decompilation in headless mode?\n\n"
-        "This will:\n"
-        "  1. Save the current IDB\n"
-        "  2. Close IDA\n"
-        "  3. Run idat64 with automatic crash recovery\n"
-        "  4. Reopen IDA when done\n\n"
-        "Crashes are handled automatically — no manual intervention needed.\n"
-        "This may take 30-60 minutes for large binaries."
-    ):
-        return False
+    if confirm:
+        if not ask_yes_no(
+            "Run mass decompilation in headless mode?\n\n"
+            "This will:\n"
+            "  1. Save the current IDB\n"
+            "  2. Close IDA\n"
+            "  3. Run idat64 with automatic crash recovery\n"
+            "  4. Reopen IDA when done\n\n"
+            "Crashes are handled automatically — no manual intervention needed.\n"
+            "This may take 30-60 minutes for large binaries."
+        ):
+            return False
 
     # Save IDB first
     msg("Saving IDB before headless decompilation...")

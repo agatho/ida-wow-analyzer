@@ -583,8 +583,15 @@ def _execute_tasks(session, tasks, batch_name="Custom"):
         msg_info("Launching headless decompilation first...")
         msg_info("Batch will resume automatically when IDA reopens.")
         from tc_wow_analyzer.batch.headless_decompile import launch_headless_decompile
-        launch_headless_decompile(session, reopen_after=True)
-        return  # IDA will close
+        success = launch_headless_decompile(session, reopen_after=True, confirm=False)
+        if not success:
+            msg_error("Headless decompilation failed to launch. "
+                      "Running batch in cache-only mode instead.")
+            # Fall through to run batch without decompilation
+            from tc_wow_analyzer.core import utils as _utils
+            _utils._decompile_cache_only = True
+        else:
+            return  # IDA will close, batch resumes after
 
     if decompile_mode == "skip":
         # Enable cache-only mode — safe_decompile will return None for
