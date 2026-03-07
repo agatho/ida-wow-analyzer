@@ -156,6 +156,8 @@ class PluginSession:
              "", self._action_llm_select),
             ("tc_wow:llm_run", "Run Task Now...",
              "Ctrl+Shift+L", self._action_llm_run),
+            ("tc_wow:activity", "Activity Log",
+             "Ctrl+Shift+G", self._action_activity_view),
         ]
 
         for action_name, label, hotkey, handler in actions:
@@ -373,6 +375,16 @@ class PluginSession:
             show_llm_selector(self)
         except Exception as e:
             msg_error(f"LLM selector error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _action_activity_view(self):
+        """Show the live activity log viewer."""
+        try:
+            from tc_wow_analyzer.ui.activity_view import show_activity_view
+            show_activity_view()
+        except Exception as e:
+            msg_error(f"Activity view error: {e}")
             import traceback
             traceback.print_exc()
 

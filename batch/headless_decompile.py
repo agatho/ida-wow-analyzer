@@ -28,6 +28,51 @@ import sys
 import time
 
 
+def _find_python():
+    """Locate a standalone Python 3 interpreter.
+
+    Inside IDA, sys.executable is ida64.exe — we need a real python.exe
+    to launch the orchestrator as an external process.
+    """
+    import shutil
+
+    # 1. Check if sys.executable is actually python (not IDA)
+    exe_name = os.path.basename(sys.executable).lower()
+    if "python" in exe_name:
+        return sys.executable
+
+    # 2. Check PATH
+    for name in ("python3", "python"):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    # 3. Common Windows install locations
+    for base in [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python"),
+        r"C:\Program Files\Python313",
+        r"C:\Program Files\Python312",
+        r"C:\Program Files\Python311",
+        r"C:\Python313",
+        r"C:\Python312",
+    ]:
+        if os.path.isdir(base):
+            # Check direct python.exe
+            candidate = os.path.join(base, "python.exe")
+            if os.path.isfile(candidate):
+                return candidate
+            # Check subdirectories (e.g., Python313/python.exe)
+            try:
+                for sub in os.listdir(base):
+                    candidate = os.path.join(base, sub, "python.exe")
+                    if os.path.isfile(candidate):
+                        return candidate
+            except OSError:
+                pass
+
+    return None
+
+
 def _find_idat64(ida_dir=None):
     """Locate idat64 executable."""
     candidates = []
@@ -292,10 +337,12 @@ def run_orchestrator(idb_path, idat_path, max_crashes=200, reopen_ida=False,
               f"(skip list: {len(skiplist)} addresses) ===")
 
         # Launch idat64
+        # -S must be immediately followed by the script path (no space).
+        # On Windows, use short-path or ensure no embedded quotes break things.
         cmd = [
             idat_path,
             "-A",                          # Autonomous mode (no dialogs)
-            f'-S"{script_path}"',          # Run our script
+            f"-S{script_path}",            # Run our script (-Spath, no quotes)
             idb_path,
         ]
 
@@ -401,8 +448,10 @@ def launch_headless_decompile(session, reopen_after=True):
     Returns:
         True if orchestrator was launched successfully
     """
+    import idaapi
     import ida_loader
     import ida_kernwin
+    from tc_wow_analyzer.core.utils import msg, msg_error, ask_yes_no
 
     # Get paths
     idb_path = ida_loader.get_path(ida_loader.PATH_TYPE_IDB)
@@ -411,7 +460,8 @@ def launch_headless_decompile(session, reopen_after=True):
         return False
 
     # Find idat64 next to current IDA installation
-    ida_dir = os.path.dirname(sys.executable)
+    # sys.executable inside IDA is ida64.exe, not python.exe — use idadir()
+    ida_dir = idaapi.idadir("")
     idat_path = None
     for name in ("idat64.exe", "idat64"):
         candidate = os.path.join(ida_dir, name)
@@ -427,7 +477,6 @@ def launch_headless_decompile(session, reopen_after=True):
         return False
 
     # Confirm with user
-    from tc_wow_analyzer.core.utils import ask_yes_no
     if not ask_yes_no(
         "Run mass decompilation in headless mode?\n\n"
         "This will:\n"
@@ -444,18 +493,26 @@ def launch_headless_decompile(session, reopen_after=True):
     msg("Saving IDB before headless decompilation...")
     ida_loader.save_database(idb_path, 0)
 
-    # Find ida64 GUI for reopening
+    # Find ida64 GUI for reopening (ida_dir already set from idaapi.idadir)
     ida_gui_path = None
     for name in ("ida64.exe", "ida64"):
         candidate = os.path.join(ida_dir, name)
-        if os.path.isfile(candidate) and "idat" not in name:
+        if os.path.isfile(candidate) and "idat" not in name.lower():
             ida_gui_path = candidate
             break
 
     # Build orchestrator command
+    # sys.executable inside IDA is ida64.exe, NOT python.exe.
+    # We need a standalone Python interpreter to run the orchestrator.
+    python_exe = _find_python()
+    if not python_exe:
+        msg_error("Cannot find a standalone Python interpreter (python.exe). "
+                  "Ensure Python 3.x is installed and on PATH.")
+        return False
+
     orchestrator_script = os.path.abspath(__file__)
     cmd = [
-        sys.executable,  # Python interpreter
+        python_exe,
         orchestrator_script,
         "--idb", idb_path,
         "--ida", idat_path,
@@ -465,25 +522,32 @@ def launch_headless_decompile(session, reopen_after=True):
         cmd.extend(["--reopen", "--ida-gui", ida_gui_path])
 
     msg(f"Launching headless decompilation orchestrator...")
+    msg(f"  Python: {python_exe}")
     msg(f"  idat64: {idat_path}")
     msg(f"  IDB: {idb_path}")
 
     # Launch as detached process (survives IDA closing)
+    # Redirect output to a log file so progress is visible
+    log_path = os.path.splitext(idb_path)[0] + ".tc_wow_decompile.log"
+    msg(f"  Log: {log_path}")
+
     try:
+        log_file = open(log_path, "w", encoding="utf-8")
         if sys.platform == "win32":
-            # DETACHED_PROCESS flag on Windows
             CREATE_NEW_PROCESS_GROUP = 0x00000200
             DETACHED_PROCESS = 0x00000008
             subprocess.Popen(
                 cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
                 creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
             )
         else:
             subprocess.Popen(
                 cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
-                close_fds=True,
             )
     except Exception as e:
         msg_error(f"Failed to launch orchestrator: {e}")
@@ -491,6 +555,7 @@ def launch_headless_decompile(session, reopen_after=True):
 
     msg("Orchestrator launched. Closing IDA in 3 seconds...")
     msg("IDA will reopen automatically when decompilation is complete.")
+    msg(f"Monitor progress: tail -f \"{log_path}\"")
 
     # Schedule IDA close after a brief delay
     def _close_ida():

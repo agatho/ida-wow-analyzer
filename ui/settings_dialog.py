@@ -487,7 +487,9 @@ def _execute_tasks(session, tasks, batch_name="Custom"):
     offer to resume from the last completed task.
     """
     import time
+    from tc_wow_analyzer.core.activity import ActivityManager
 
+    amgr = ActivityManager.get()
     results = {}
     db = session.db
 
@@ -504,17 +506,32 @@ def _execute_tasks(session, tasks, batch_name="Custom"):
 
     from tc_wow_analyzer.core.utils import maybe_autosave_idb
 
+    amgr.batch_start(batch_name, tasks)
+
+    # Auto-open the activity view so the user can see progress
+    try:
+        from tc_wow_analyzer.ui.activity_view import show_activity_view
+        show_activity_view()
+    except Exception:
+        pass
+
     for i, task_name in enumerate(tasks):
         msg_info(f"[{i + 1}/{len(tasks)}] >>> {task_name}")
+        amgr.task_start(task_name)
+        amgr.task_progress(i + 1, len(tasks))
         try:
             count = _run_single_task(session, task_name)
             results[task_name] = count
             msg_info(f"    -> {count} items")
+            amgr.task_end(task_name, count=count)
         except Exception as e:
             msg_error(f"    -> FAILED: {e}")
             import traceback
             traceback.print_exc()
             results[task_name] = -1
+            amgr.task_end(task_name, result=f"FAILED: {e}")
+
+        amgr.batch_task_done(task_name)
 
         # Checkpoint after each task
         state["completed"].append(task_name)
@@ -528,6 +545,8 @@ def _execute_tasks(session, tasks, batch_name="Custom"):
     # All done — clear the batch state
     if db:
         _clear_batch_state(db)
+
+    amgr.batch_end()
 
     # Summary
     msg_info("=" * 50)

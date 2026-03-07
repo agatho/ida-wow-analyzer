@@ -420,18 +420,31 @@ def ask_yes_no(question, default=True):
 def msg(text):
     """Print a message to IDA output window with plugin prefix."""
     print(f"[TC-WoW] {text}")
+    _post_activity(text, "info")
 
 
 def msg_info(text):
     """Print an info message."""
     print(f"[TC-WoW] INFO: {text}")
+    _post_activity(text, "info")
 
 
 def msg_warn(text):
     """Print a warning."""
     print(f"[TC-WoW] WARNING: {text}")
+    _post_activity(text, "warn")
 
 
 def msg_error(text):
     """Print an error."""
     print(f"[TC-WoW] ERROR: {text}")
+    _post_activity(text, "error")
+
+
+def _post_activity(text, level):
+    """Forward message to the activity manager (if initialized)."""
+    try:
+        from tc_wow_analyzer.core.activity import ActivityManager
+        ActivityManager.get().post(text, level=level)
+    except Exception:
+        pass

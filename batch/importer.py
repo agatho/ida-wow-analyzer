@@ -104,13 +104,23 @@ def run_import(session, dumps_dir=None):
         (f"wow_crypto_{build}.json", _import_crypto),
     ]
 
+    # Activity tracking for progress display
+    try:
+        from tc_wow_analyzer.core.activity import ActivityManager
+        amgr = ActivityManager.get()
+    except Exception:
+        amgr = None
+
+    available = [(f, fn) for f, fn in importers
+                 if os.path.isfile(os.path.join(dumps_dir, f))]
+
     results = {}
-    for filename, importer_func in importers:
+    for idx, (filename, importer_func) in enumerate(available):
         filepath = os.path.join(dumps_dir, filename)
-        if not os.path.isfile(filepath):
-            continue
 
         msg_info(f"  Importing {filename}...")
+        if amgr:
+            amgr.task_progress(idx + 1, len(available), f"Importing {filename}")
         try:
             count = importer_func(session, filepath)
             results[filename] = count
