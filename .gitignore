@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.db
+*.sqlite
+*.sqlite3
+.idea/
+.vscode/
+*.idb
+*.i64
+*.til
+*.id0
+*.id1
+*.id2
+*.nam
