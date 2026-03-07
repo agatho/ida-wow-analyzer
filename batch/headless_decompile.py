@@ -323,11 +323,12 @@ def run_orchestrator(idb_path, idat_path, max_crashes=200, reopen_ida=False,
     _create_decompile_script(script_path)
 
     crash_count = 0
+    no_canary_streak = 0
     start_time = time.time()
 
     print(f"[Orchestrator] Starting headless decompilation")
     print(f"[Orchestrator] IDB: {idb_path}")
-    print(f"[Orchestrator] idat64: {idat_path}")
+    print(f"[Orchestrator] idat: {idat_path}")
     print(f"[Orchestrator] Max crash recoveries: {max_crashes}")
     print()
 
@@ -372,6 +373,7 @@ def run_orchestrator(idb_path, idat_path, max_crashes=200, reopen_ida=False,
         crash_ea = _read_canary(idb_base)
         if crash_ea:
             crash_count += 1
+            no_canary_streak = 0
             skiplist.add(crash_ea)
             _save_skiplist(idb_base, skiplist, fingerprint)
             _remove_canary(idb_base)
@@ -380,11 +382,9 @@ def run_orchestrator(idb_path, idat_path, max_crashes=200, reopen_ida=False,
         else:
             # Non-decompiler crash (maybe out of memory, etc.)
             crash_count += 1
+            no_canary_streak += 1
             print(f"[Orchestrator] Crash #{crash_count} — "
-                  f"no canary found (non-decompiler crash?)")
-            if crash_count >= 3 and not crash_ea:
-                print("[Orchestrator] 3 consecutive non-decompiler crashes — aborting")
-                break
+                  f"no canary found (non-decompiler crash, streak: {no_canary_streak})")
 
         # Brief pause before retry
         time.sleep(2)
@@ -397,16 +397,22 @@ def run_orchestrator(idb_path, idat_path, max_crashes=200, reopen_ida=False,
 
     elapsed = time.time() - start_time
     final_skiplist, _ = _read_skiplist(idb_base)
-    success = crash_count < max_crashes
+    # Success only if idat exited cleanly (exit_code 0), meaning all
+    # functions were either decompiled or skipped
+    clean_exit = (exit_code == 0)
 
     print()
-    print(f"[Orchestrator] {'SUCCESS' if success else 'ABORTED'}")
+    if clean_exit:
+        print(f"[Orchestrator] COMPLETE — all functions processed")
+    else:
+        print(f"[Orchestrator] STOPPED after {max_crashes} crash recoveries")
     print(f"[Orchestrator] Total crashes recovered: {crash_count}")
     print(f"[Orchestrator] Skip list size: {len(final_skiplist)}")
     print(f"[Orchestrator] Total time: {elapsed / 60:.1f} minutes")
 
-    # Optionally reopen IDA GUI
-    if reopen_ida and success:
+    # Reopen IDA GUI regardless — the IDB is enriched even if not all
+    # functions were decompiled
+    if reopen_ida:
         gui_path = ida_gui_path
         if not gui_path:
             # Derive from idat path
@@ -424,7 +430,7 @@ def run_orchestrator(idb_path, idat_path, max_crashes=200, reopen_ida=False,
             print("[Orchestrator] Could not find ida64 — please reopen IDA manually")
 
     return {
-        "success": success,
+        "success": clean_exit,
         "total_crashes": crash_count,
         "skip_list_size": len(final_skiplist),
         "elapsed_s": round(elapsed, 1),
