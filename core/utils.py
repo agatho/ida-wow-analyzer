@@ -225,6 +225,10 @@ def get_skiplist_count():
 
 _MAX_FUNC_SIZE = 200_000  # bytes — skip functions larger than this
 
+# When True, safe_decompile returns None for uncached functions instead
+# of calling the decompiler.  Set by batch runner to prevent GUI crashes.
+_decompile_cache_only = False
+
 
 def safe_decompile(ea):
     """Decompile a function with crash protection.
@@ -232,6 +236,7 @@ def safe_decompile(ea):
     Returns the cfunc object on success, None if:
       - The address is in the skip list (previous crash)
       - The function is too large (>200KB, likely to hang/OOM)
+      - Cache-only mode is active and function isn't cached
       - Hex-Rays raises a Python exception
       - The decompiler returns None
 
@@ -241,6 +246,10 @@ def safe_decompile(ea):
     _ensure_skiplist_loaded()
 
     if ea in _decompile_skiplist:
+        return None
+
+    # In cache-only mode, don't call the decompiler at all
+    if _decompile_cache_only:
         return None
 
     # Guard: skip oversized functions that may hang the decompiler

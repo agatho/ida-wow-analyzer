@@ -479,6 +479,79 @@ def _check_resume(session):
         return "cancel"  # user hit Cancel
 
 
+_DECOMPILE_TASKS = {
+    "alloc_class_catalog", "behavioral_spec", "binary_tc_alignment",
+    "callee_contracts", "conformance_scoring", "constant_mining",
+    "cross_build_migration", "cvar_extraction", "dependency_mapper",
+    "enum_recovery", "event_system_recovery", "execution_trace_sim",
+    "function_similarity", "handler_scaffolding", "idb_enrichment",
+    "indirect_call_resolution", "jam_recovery", "llm_semantic_decompiler",
+    "lua_contracts", "negative_space", "object_layout", "object_lifecycle",
+    "packet_replay", "protocol_sequencing", "pseudocode_transpiler",
+    "response_reconstruction", "return_value_semantics",
+    "shared_code_detection", "state_machine_recovery", "string_intelligence",
+    "symbolic_constraints", "taint_analysis", "test_generator",
+    "thread_safety_map", "validation_extractor", "wire_format_recovery",
+}
+
+
+def _check_decompile_safety(session, tasks):
+    """Check if batch needs decompilation and offer headless mode.
+
+    Returns:
+        "headless" — user chose headless decompile (will close IDA)
+        "skip"     — user chose to skip decompilation (cache-only mode)
+        "proceed"  — no decompilation needed, or user accepts risk
+    """
+    needs_decompile = [t for t in tasks if t in _DECOMPILE_TASKS]
+    if not needs_decompile:
+        return "proceed"
+
+    # Check how many functions are already cached
+    cached = 0
+    total_funcs = 0
+    try:
+        import idautils
+        total_funcs = sum(1 for _ in idautils.Functions())
+        if session.db:
+            row = session.db.fetchone("SELECT COUNT(*) as c FROM cfunc_cache")
+            if row:
+                cached = row["c"]
+    except Exception:
+        pass
+
+    skip_count = 0
+    try:
+        from tc_wow_analyzer.core.utils import get_skiplist_count
+        skip_count = get_skiplist_count()
+    except Exception:
+        pass
+
+    msg = (
+        f"{len(needs_decompile)} of your selected tasks use decompilation.\n"
+        f"The decompiler can crash IDA on certain functions.\n\n"
+        f"  Functions: ~{total_funcs:,}\n"
+        f"  Cached: {cached:,}\n"
+        f"  Skip list: {skip_count} (known crashers)\n\n"
+        f"Options:\n"
+        f"  YES  = Run headless decompilation first (safe, closes IDA)\n"
+        f"  NO   = Use cached results only (no new decompilation)\n"
+        f"  CANCEL = Proceed anyway (risk crash)\n"
+    )
+
+    answer = ida_kernwin.ask_yn(
+        ida_kernwin.ASKBTN_YES,
+        f"TC WoW Analyzer — Decompilation Safety\n\n{msg}"
+    )
+
+    if answer == ida_kernwin.ASKBTN_YES:
+        return "headless"
+    elif answer == ida_kernwin.ASKBTN_NO:
+        return "skip"
+    else:
+        return "proceed"
+
+
 def _execute_tasks(session, tasks, batch_name="Custom"):
     """Execute the selected tasks in order with crash-safe checkpointing.
 
@@ -488,6 +561,37 @@ def _execute_tasks(session, tasks, batch_name="Custom"):
     """
     import time
     from tc_wow_analyzer.core.activity import ActivityManager
+
+    # Check decompilation safety before starting
+    decompile_mode = _check_decompile_safety(session, tasks)
+
+    if decompile_mode == "headless":
+        # Launch headless decompilation — this will close IDA.
+        # Save the batch state so it resumes after IDA reopens.
+        db = session.db
+        state = {
+            "batch_name": batch_name,
+            "tasks": list(tasks),
+            "completed": [],
+            "results": {},
+            "started_at": time.time(),
+        }
+        if db:
+            _save_batch_state(db, state)
+            db.commit()
+
+        msg_info("Launching headless decompilation first...")
+        msg_info("Batch will resume automatically when IDA reopens.")
+        from tc_wow_analyzer.batch.headless_decompile import launch_headless_decompile
+        launch_headless_decompile(session, reopen_after=True)
+        return  # IDA will close
+
+    if decompile_mode == "skip":
+        # Enable cache-only mode — safe_decompile will return None for
+        # uncached functions instead of calling the decompiler
+        from tc_wow_analyzer.core import utils as _utils
+        _utils._decompile_cache_only = True
+        msg_info("Running in cache-only mode — no new decompilation")
 
     amgr = ActivityManager.get()
     results = {}
@@ -547,6 +651,13 @@ def _execute_tasks(session, tasks, batch_name="Custom"):
         _clear_batch_state(db)
 
     amgr.batch_end()
+
+    # Reset cache-only mode
+    try:
+        from tc_wow_analyzer.core import utils as _utils
+        _utils._decompile_cache_only = False
+    except Exception:
+        pass
 
     # Summary
     msg_info("=" * 50)
