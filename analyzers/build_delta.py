@@ -1815,6 +1815,163 @@ def get_breaking_changes(session):
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _generate_baseline_report(session):
+    """Generate a baseline report when there is only one build (no old DB).
+
+    Catalogues the current build's stats: opcodes, functions, DB2 tables,
+    JAM types, vtables, and detected systems. Stores the result in kv_store
+    under "build_baseline" and returns the total number of items catalogued.
+    """
+    db = session.db
+    cfg = session.cfg
+    build_number = cfg.build_number
+
+    msg_info(f"No old build data — generating baseline report for build {build_number}")
+
+    # Count core tables
+    opcode_count = db.count("opcodes")
+    function_count = db.count("functions")
+    db2_count = db.count("db2_tables")
+    jam_count = db.count("jam_types")
+    vtable_count = db.count("vtables")
+
+    # Count opcodes by direction
+    direction_counts = {}
+    try:
+        rows = db.fetchall(
+            "SELECT direction, COUNT(*) AS cnt FROM opcodes GROUP BY direction"
+        )
+        for row in rows:
+            direction_counts[row["direction"] or "unknown"] = row["cnt"]
+    except Exception:
+        pass
+
+    # Count opcodes by status
+    status_counts = {}
+    try:
+        rows = db.fetchall(
+            "SELECT status, COUNT(*) AS cnt FROM opcodes GROUP BY status"
+        )
+        for row in rows:
+            status_counts[row["status"] or "unknown"] = row["cnt"]
+    except Exception:
+        pass
+
+    # Detect systems from functions table
+    systems_detected = []
+    try:
+        rows = db.fetchall(
+            "SELECT system, COUNT(*) AS cnt FROM functions "
+            "WHERE system IS NOT NULL GROUP BY system ORDER BY cnt DESC"
+        )
+        systems_detected = [
+            {"system": row["system"], "function_count": row["cnt"]}
+            for row in rows
+        ]
+    except Exception:
+        pass
+
+    # Count named functions
+    named_function_count = 0
+    try:
+        row = db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM functions WHERE name IS NOT NULL "
+            "AND name NOT LIKE 'sub_%'"
+        )
+        if row:
+            named_function_count = row["cnt"]
+    except Exception:
+        pass
+
+    # Count opcodes with handler_ea
+    handler_count = 0
+    try:
+        row = db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM opcodes WHERE handler_ea IS NOT NULL"
+        )
+        if row:
+            handler_count = row["cnt"]
+    except Exception:
+        pass
+
+    # Count opcodes with tc_name
+    matched_count = 0
+    try:
+        row = db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM opcodes WHERE tc_name IS NOT NULL"
+        )
+        if row:
+            matched_count = row["cnt"]
+    except Exception:
+        pass
+
+    # Count opcodes with jam_type
+    jam_linked_count = 0
+    try:
+        row = db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM opcodes "
+            "WHERE jam_type IS NOT NULL AND jam_type != '' AND jam_type != 'none'"
+        )
+        if row:
+            jam_linked_count = row["cnt"]
+    except Exception:
+        pass
+
+    # Count cached pseudocode
+    cached_pseudocode_count = 0
+    try:
+        row = db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM cfunc_cache WHERE pseudocode IS NOT NULL"
+        )
+        if row:
+            cached_pseudocode_count = row["cnt"]
+    except Exception:
+        pass
+
+    total_items = (opcode_count + function_count + db2_count
+                   + jam_count + vtable_count)
+
+    baseline = {
+        "build_number": build_number,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "summary": {
+            "total_items_catalogued": total_items,
+            "opcodes": opcode_count,
+            "functions": function_count,
+            "named_functions": named_function_count,
+            "db2_tables": db2_count,
+            "jam_types": jam_count,
+            "vtables": vtable_count,
+            "handlers_with_ea": handler_count,
+            "handlers_matched": matched_count,
+            "handlers_jam_linked": jam_linked_count,
+            "cached_pseudocode": cached_pseudocode_count,
+        },
+        "direction_breakdown": direction_counts,
+        "status_breakdown": status_counts,
+        "systems_detected": systems_detected,
+    }
+
+    db.kv_set("build_baseline", baseline)
+    db.commit()
+
+    msg_info(f"Baseline report for build {build_number}:")
+    msg_info(f"  Opcodes:        {opcode_count}")
+    msg_info(f"  Functions:      {function_count} ({named_function_count} named)")
+    msg_info(f"  DB2 tables:     {db2_count}")
+    msg_info(f"  JAM types:      {jam_count}")
+    msg_info(f"  VTables:        {vtable_count}")
+    msg_info(f"  Handlers w/ EA: {handler_count}")
+    msg_info(f"  JAM linked:     {jam_linked_count}")
+    msg_info(f"  Cached decompilations: {cached_pseudocode_count}")
+    if systems_detected:
+        msg_info(f"  Systems detected: {len(systems_detected)}")
+        for s in systems_detected[:10]:
+            msg(f"    {s['system']}: {s['function_count']} functions")
+
+    return total_items
+
+
 def analyze_build_delta(session, old_build_data_path):
     """Main entry point: diff two builds' analysis data handler-by-handler.
 
@@ -1822,16 +1979,24 @@ def analyze_build_delta(session, old_build_data_path):
     the current build's data in the session DB, computes semantic diffs
     for each handler, and stores the complete delta in kv_store.
 
+    If old_build_data_path is None or doesn't exist, generates a baseline
+    report of the current build instead of returning 0.
+
     Args:
         session: PluginSession with .db and .cfg
         old_build_data_path: Path to old build's .db/.json/directory
 
     Returns:
-        Number of changes found (total change entries across all handlers).
+        Number of changes found (total change entries across all handlers),
+        or total items catalogued for baseline mode.
     """
     db = session.db
     cfg = session.cfg
     start = time.time()
+
+    # If no old build path provided, generate baseline report instead
+    if not old_build_data_path or not os.path.exists(old_build_data_path):
+        return _generate_baseline_report(session)
 
     msg_info(f"Starting cross-build delta analysis...")
     msg_info(f"Old build data: {old_build_data_path}")
@@ -1840,7 +2005,7 @@ def analyze_build_delta(session, old_build_data_path):
     old_data = _load_old_build_data(old_build_data_path)
     if not old_data:
         msg_error("Failed to load old build data")
-        return 0
+        return _generate_baseline_report(session)
 
     old_build = old_data["build_number"]
     old_handlers = old_data["handlers"]

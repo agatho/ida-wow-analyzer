@@ -220,7 +220,7 @@ def _classify_handler(tc_name):
 def _collect_handler_data(session, handler_row):
     """Gather ALL analyzer results for a single handler into HandlerData."""
     db = session.db
-    tc_name = handler_row["tc_name"]
+    tc_name = handler_row["tc_name"] or handler_row.get("jam_type") or f"handler_{handler_row['internal_index']}"
     handler_ea = handler_row["handler_ea"]
     jam_type = handler_row["jam_type"]
 
@@ -368,7 +368,7 @@ def _collect_handler_data(session, handler_row):
     # --- Raw decompiled text (fallback for gap annotations) ---
     if handler_ea:
         try:
-            hd.decompiled_text = get_decompiled_text(handler_ea)
+            hd.decompiled_text = get_decompiled_text(handler_ea, db=db)
         except Exception:
             pass
 
@@ -1511,11 +1511,14 @@ def generate_all_scaffolds(session):
 
     start_time = time.time()
 
-    # Get all CMSG handlers that have both a handler_ea and a tc_name
+    # Get all CMSG handlers that have both a handler_ea and a tc_name.
+    # Also accept direction='unknown' (imported opcodes not yet classified)
+    # and handlers without tc_name (use jam_type or index as fallback).
     handlers = db.fetchall(
-        "SELECT * FROM opcodes WHERE direction = 'CMSG' "
-        "AND handler_ea IS NOT NULL AND tc_name IS NOT NULL "
-        "ORDER BY tc_name"
+        "SELECT * FROM opcodes WHERE handler_ea IS NOT NULL "
+        "AND (direction = 'CMSG' OR direction = 'unknown') "
+        "AND (tc_name IS NOT NULL OR jam_type IS NOT NULL) "
+        "ORDER BY COALESCE(tc_name, jam_type, internal_index)"
     )
 
     if not handlers:
@@ -1531,7 +1534,7 @@ def generate_all_scaffolds(session):
     error_count = 0
 
     for i, handler_row in enumerate(handlers):
-        tc_name = handler_row["tc_name"]
+        tc_name = handler_row["tc_name"] or handler_row.get("jam_type") or f"handler_{handler_row['internal_index']}"
         try:
             hd = _collect_handler_data(session, handler_row)
             cpp_code, metadata = _assemble_scaffold(hd)

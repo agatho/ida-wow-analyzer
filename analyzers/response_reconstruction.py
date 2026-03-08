@@ -639,7 +639,7 @@ def _trace_helper_calls(pseudocode, handler_ea, db):
                ("operator", "memcpy", "memset", "strlen", "printf", "assert")):
             continue
 
-        callee_code = get_decompiled_text(callee_ea)
+        callee_code = get_decompiled_text(callee_ea, db=db)
         if not callee_code:
             continue
 
@@ -677,7 +677,8 @@ def reconstruct_responses(session, system_filter=None):
     handler_count = 0
 
     query = ("SELECT * FROM opcodes "
-             "WHERE handler_ea IS NOT NULL AND direction = 'CMSG'")
+             "WHERE handler_ea IS NOT NULL "
+             "AND (direction = 'CMSG' OR direction = 'unknown')")
     if system_filter:
         query += f" AND (tc_name LIKE '%{system_filter}%' OR jam_type LIKE '%{system_filter}%')"
     handlers = db.fetchall(query)
@@ -692,7 +693,7 @@ def reconstruct_responses(session, system_filter=None):
         jam_type = handler["jam_type"] or ""
         internal_index = handler["internal_index"]
 
-        pseudocode = get_decompiled_text(ea)
+        pseudocode = get_decompiled_text(ea, db=db)
         if not pseudocode:
             continue
 

@@ -235,7 +235,7 @@ def recover_object_lifecycles(session, system_filter=None):
         ea = func_info["ea"]
         func_name = func_info["name"] or f"sub_{ea:X}"
 
-        pseudocode = get_decompiled_text(ea)
+        pseudocode = get_decompiled_text(ea, db=db)
         if not pseudocode:
             continue
 
@@ -283,6 +283,13 @@ def recover_object_lifecycles(session, system_filter=None):
             issue["function_ea"] = ea
         issues.extend(match_issues)
 
+    # --- Fallback: extract lifecycle info from function names in DB ---
+    # When decompilation is unavailable, we can still build lifecycle records
+    # from named constructor/destructor functions in the functions table.
+    if func_count == 0:
+        msg_info("No pseudocode available — falling back to DB-based lifecycle extraction")
+        all_lifecycles = _extract_lifecycles_from_db(db, system_filter)
+
     # Deduplicate lifecycles by class + size
     merged = _merge_lifecycles(all_lifecycles)
 
@@ -293,7 +300,8 @@ def recover_object_lifecycles(session, system_filter=None):
 
     elapsed = time.time() - start_time
     msg_info(f"Recovered {len(merged)} object lifecycles from "
-             f"{func_count} functions in {elapsed:.1f}s")
+             f"{func_count} decompiled functions "
+             f"+ DB patterns in {elapsed:.1f}s")
     msg_info(f"  Found {len(issues)} potential lifecycle issues")
 
     # Log summary of top classes
@@ -1508,6 +1516,151 @@ def _populate_known_sizes(db):
         pass
 
 
+def _extract_lifecycles_from_db(db, system_filter):
+    """Extract object lifecycle records from function names in the DB.
+
+    When decompilation is unavailable, we can still identify constructor/
+    destructor pairs and allocation patterns from named functions. This
+    provides a useful skeleton even without pseudocode analysis.
+
+    Returns a list of lifecycle dicts in the same format as the main loop.
+    """
+    lifecycles = []
+
+    # Query functions with constructor/destructor name patterns
+    base_query = (
+        "SELECT ea, name FROM functions WHERE name IS NOT NULL AND ("
+        "name LIKE '%construct%' OR name LIKE '%destruct%' "
+        "OR name LIKE '%::~%' OR name LIKE '%_ctor%' OR name LIKE '%_dtor%' "
+        "OR name LIKE '%_Validate%' OR name LIKE '%_Free%' "
+        "OR name LIKE '%Create%' OR name LIKE '%Destroy%' "
+        "OR name LIKE '%::Init%' OR name LIKE '%::Shutdown%' "
+        "OR name LIKE '%operator_new%' OR name LIKE '%operator_delete%'"
+        ") ORDER BY name"
+    )
+    rows = db.fetchall(base_query)
+
+    if not rows:
+        msg_info("  No constructor/destructor patterns found in functions table")
+        return lifecycles
+
+    msg_info(f"  Found {len(rows)} constructor/destructor pattern functions")
+
+    # Group functions by likely class name
+    class_funcs = defaultdict(list)
+
+    for row in rows:
+        name = row["name"]
+        ea = row["ea"]
+        if not name:
+            continue
+
+        # Extract class name from various patterns
+        class_name = None
+        phase = "unknown"
+
+        # Pattern: ClassName::~ClassName  (destructor)
+        dtor_match = re.match(r'(\w+)::~\w+', name)
+        if dtor_match:
+            class_name = dtor_match.group(1)
+            phase = "destroy"
+        # Pattern: ClassName::ClassName  (constructor)
+        elif '::' in name:
+            parts = name.split('::')
+            if len(parts) >= 2:
+                cls_part = parts[0]
+                method_part = parts[1].split('(')[0]
+                if cls_part == method_part:
+                    class_name = cls_part
+                    phase = "construct"
+                elif method_part.lower() in ('init', 'initialize', 'create', 'setup'):
+                    class_name = cls_part
+                    phase = "init"
+                elif method_part.lower() in ('shutdown', 'cleanup', 'destroy',
+                                              'release', 'free', 'close'):
+                    class_name = cls_part
+                    phase = "destroy"
+                else:
+                    class_name = cls_part
+                    phase = "use"
+        # Pattern: ai_Validate_ClassName or ai_Free_ClassName
+        elif name.startswith('ai_Validate_'):
+            class_name = name[len('ai_Validate_'):]
+            phase = "init"
+        elif name.startswith('ai_Free_'):
+            class_name = name[len('ai_Free_'):]
+            phase = "destroy"
+        # Pattern: ClassName_construct / ClassName_destruct
+        elif '_construct' in name:
+            class_name = name[:name.index('_construct')]
+            phase = "construct"
+        elif '_destruct' in name:
+            class_name = name[:name.index('_destruct')]
+            phase = "destroy"
+        elif '_ctor' in name:
+            class_name = name[:name.index('_ctor')]
+            phase = "construct"
+        elif '_dtor' in name:
+            class_name = name[:name.index('_dtor')]
+            phase = "destroy"
+
+        if class_name and (not system_filter or
+                           system_filter.lower() in class_name.lower()):
+            class_funcs[class_name].append({
+                "ea": ea,
+                "name": name,
+                "phase": phase,
+            })
+
+    # Build lifecycle records from grouped functions
+    for class_name, funcs in class_funcs.items():
+        timeline = []
+        for func_info in funcs:
+            timeline.append({
+                "phase": func_info["phase"],
+                "line": 0,
+                "detail": func_info["name"],
+            })
+
+        has_ctor = any(f["phase"] in ("construct", "init") for f in funcs)
+        has_dtor = any(f["phase"] == "destroy" for f in funcs)
+
+        if has_ctor and has_dtor:
+            ownership = "managed"
+        elif has_dtor:
+            ownership = "explicit_cleanup"
+        elif has_ctor:
+            ownership = "created_no_cleanup"
+        else:
+            ownership = "unknown"
+
+        lifecycle = {
+            "function": funcs[0]["name"],
+            "function_ea": funcs[0]["ea"],
+            "allocation": {
+                "type": "db_pattern",
+                "size": None,
+                "line": 0,
+                "variable": class_name,
+                "constructor_call": None,
+                "constructor_call_ea": None,
+                "vtable_assign": None,
+                "vtable_ea": None,
+                "class_name": class_name,
+                "raw": f"[from DB function name: {funcs[0]['name']}]",
+            },
+            "timeline": timeline,
+            "ownership": ownership,
+            "class_name": class_name,
+            "size": _KNOWN_SIZES.get(class_name),
+            "functions": [f["name"] for f in funcs],
+        }
+        lifecycles.append(lifecycle)
+
+    msg_info(f"  Extracted {len(lifecycles)} class lifecycles from DB patterns")
+    return lifecycles
+
+
 def _get_candidate_functions(db, system_filter):
     """Get functions to scan for object lifecycles.
 
@@ -1563,6 +1716,36 @@ def _get_candidate_functions(db, system_filter):
         )
     vtable_query += " ORDER BY ve.func_ea"
     rows = db.fetchall(vtable_query)
+    for row in rows:
+        ea = row["ea"]
+        if ea and ea not in seen_eas:
+            candidates.append({"ea": ea, "name": row["name"]})
+            seen_eas.add(ea)
+
+    # Add constructor/destructor functions from the functions table
+    # (matches patterns like ai_Validate_*, ai_Free_*, *_construct,
+    #  *_destruct, *::~*, operator_new, etc.)
+    ctor_dtor_query = (
+        "SELECT ea, name FROM functions WHERE "
+        "name LIKE '%construct%' OR name LIKE '%destruct%' "
+        "OR name LIKE '%_Validate%' OR name LIKE '%_Free%' "
+        "OR name LIKE '%::~%' OR name LIKE '%_ctor%' OR name LIKE '%_dtor%' "
+        "OR name LIKE '%operator_new%' OR name LIKE '%operator_delete%' "
+        "OR name LIKE '%Create%' OR name LIKE '%Destroy%' "
+        "ORDER BY ea"
+    )
+    if system_filter:
+        ctor_dtor_query = (
+            "SELECT ea, name FROM functions WHERE ("
+            "name LIKE '%construct%' OR name LIKE '%destruct%' "
+            "OR name LIKE '%_Validate%' OR name LIKE '%_Free%' "
+            "OR name LIKE '%::~%' OR name LIKE '%_ctor%' OR name LIKE '%_dtor%' "
+            "OR name LIKE '%operator_new%' OR name LIKE '%operator_delete%' "
+            "OR name LIKE '%Create%' OR name LIKE '%Destroy%'"
+            f") AND name LIKE '%{system_filter}%' "
+            "ORDER BY ea"
+        )
+    rows = db.fetchall(ctor_dtor_query)
     for row in rows:
         ea = row["ea"]
         if ea and ea not in seen_eas:

@@ -666,8 +666,8 @@ def analyze_wire_formats(session, system_filter=None):
     query = "SELECT * FROM opcodes WHERE handler_ea IS NOT NULL"
     params = ()
     if system_filter:
-        query += " AND tc_name LIKE ?"
-        params = (f"%{system_filter}%",)
+        query += " AND (tc_name LIKE ? OR jam_type LIKE ?)"
+        params = (f"%{system_filter}%", f"%{system_filter}%")
 
     handlers = db.fetchall(query, params)
     if not handlers:
@@ -687,8 +687,8 @@ def analyze_wire_formats(session, system_filter=None):
         tc_name = handler["tc_name"] or f"opcode_0x{handler['internal_index']:X}"
         direction = handler["direction"]
 
-        # Decompile the handler
-        pseudocode = get_decompiled_text(ea)
+        # Decompile the handler (pass db so cached pseudocode is used)
+        pseudocode = get_decompiled_text(ea, db=db)
         if not pseudocode:
             skipped += 1
             continue

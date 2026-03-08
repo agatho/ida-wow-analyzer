@@ -339,41 +339,127 @@ def analyze_handler_jam_types(session):
         if rva:
             serializer_eas.add(cfg.rva_to_ea(rva))
 
-    if not serializer_eas:
-        msg_warn("No serializer RVAs configured — JAM type detection skipped")
-        return 0
-
     handlers = db.fetchall("SELECT * FROM opcodes WHERE handler_ea IS NOT NULL")
     updated = 0
 
-    for handler in handlers:
-        handler_ea = handler["handler_ea"]
-        func = ida_funcs.get_func(handler_ea)
-        if not func:
-            continue
+    # --- Strategy 1: IDA xref-based matching (original, requires live IDA) ---
+    if serializer_eas:
+        for handler in handlers:
+            handler_ea = handler["handler_ea"]
+            func = ida_funcs.get_func(handler_ea)
+            if not func:
+                continue
 
-        # Check first-level callees for JAM deserializer patterns
-        for head in idautils.Heads(func.start_ea,
-                                    min(func.end_ea, func.start_ea + 0x200)):
-            for xref in idautils.XrefsFrom(head, 0):
-                if xref.type not in (ida_xref.fl_CF, ida_xref.fl_CN):
+            # Check first-level callees for JAM deserializer patterns
+            for head in idautils.Heads(func.start_ea,
+                                        min(func.end_ea, func.start_ea + 0x200)):
+                for xref in idautils.XrefsFrom(head, 0):
+                    if xref.type not in (ida_xref.fl_CF, ida_xref.fl_CN):
+                        continue
+                    callee_name = ida_name.get_name(xref.to)
+                    if callee_name and callee_name.startswith("Jam"):
+                        # Found a JAM type reference
+                        jam_name = callee_name.split("::")[0] if "::" in callee_name else callee_name
+                        db.upsert_opcode(
+                            direction=handler["direction"],
+                            internal_index=handler["internal_index"],
+                            jam_type=jam_name,
+                        )
+                        db.upsert_jam_type(
+                            name=jam_name,
+                            deserializer_ea=xref.to,
+                        )
+                        updated += 1
+                        break
+
+    # --- Strategy 2: DB-based name matching from functions table ---
+    # Works even without serializer RVAs or live IDA
+    if updated == 0:
+        msg_info("No serializer RVAs or live IDA xrefs — trying DB-based JAM linking...")
+
+        # Build a map of Handler_Jam* functions from the functions table
+        handler_jam_funcs = db.fetchall(
+            "SELECT ea, name FROM functions "
+            "WHERE name LIKE 'Handler_Jam%' OR name LIKE 'FJam%_Deserialize' "
+            "OR name LIKE 'Jam%_Serialize' OR name LIKE '%Jam%_Read' "
+            "ORDER BY name"
+        )
+
+        if handler_jam_funcs:
+            msg_info(f"  Found {len(handler_jam_funcs)} JAM-related functions in DB")
+
+            # Build a map from handler_ea to handler row
+            handler_by_ea = {h["handler_ea"]: h for h in handlers}
+
+            # Build a map from function EA -> JAM type name
+            jam_func_map = {}  # ea -> jam_type_name
+            for func_row in handler_jam_funcs:
+                fname = func_row["name"]
+                # Extract JAM type name from function name patterns:
+                #   Handler_JamFoo -> JamFoo
+                #   FJamFoo_Deserialize -> JamFoo
+                #   JamFoo_Serialize -> JamFoo
+                jam_name = None
+                if fname.startswith("Handler_Jam"):
+                    jam_name = fname[len("Handler_"):]
+                elif fname.startswith("Handler_"):
+                    # Handler_SomethingJamFoo
+                    jam_name = fname[len("Handler_"):]
+                elif fname.startswith("FJam") and "_Deserialize" in fname:
+                    jam_name = fname[1:fname.index("_Deserialize")]
+                elif "Jam" in fname and "_Serialize" in fname:
+                    idx = fname.index("Jam")
+                    jam_name = fname[idx:fname.index("_Serialize")]
+                elif "Jam" in fname and "_Read" in fname:
+                    idx = fname.index("Jam")
+                    jam_name = fname[idx:fname.index("_Read")]
+
+                if jam_name:
+                    jam_func_map[func_row["ea"]] = jam_name
+
+            # Also build JAM type name set from jam_types table
+            known_jam_types = set()
+            jam_rows = db.fetchall("SELECT name FROM jam_types")
+            for jr in jam_rows:
+                if jr["name"]:
+                    known_jam_types.add(jr["name"])
+
+            # Strategy 2a: Match by xrefs in functions table
+            # For each handler_ea, find functions that xref TO this handler
+            # (callers that set up the JAM type before calling the handler)
+            for func_row in handler_jam_funcs:
+                func_ea = func_row["ea"]
+                jam_name = jam_func_map.get(func_ea)
+                if not jam_name:
                     continue
-                callee_name = ida_name.get_name(xref.to)
-                if callee_name and callee_name.startswith("Jam"):
-                    # Found a JAM type reference
-                    jam_name = callee_name.split("::")[0] if "::" in callee_name else callee_name
-                    db.upsert_opcode(
-                        direction=handler["direction"],
-                        internal_index=handler["internal_index"],
-                        jam_type=jam_name,
-                    )
-                    # Also ensure JAM type exists in jam_types table
-                    db.upsert_jam_type(
-                        name=jam_name,
-                        deserializer_ea=xref.to,
-                    )
-                    updated += 1
-                    break
+
+                # Check if this function IS a handler (direct match)
+                if func_ea in handler_by_ea:
+                    handler = handler_by_ea[func_ea]
+                    if not handler.get("jam_type") or handler["jam_type"] in ("", "none"):
+                        db.upsert_opcode(
+                            direction=handler["direction"],
+                            internal_index=handler["internal_index"],
+                            jam_type=jam_name,
+                        )
+                        if jam_name not in known_jam_types:
+                            db.upsert_jam_type(name=jam_name, deserializer_ea=func_ea)
+                            known_jam_types.add(jam_name)
+                        updated += 1
+
+            # Strategy 2b: Match JAM types to handlers by name containment
+            # If opcode already has a jam_type field from import, ensure it's in jam_types table
+            for handler in handlers:
+                existing_jam = handler.get("jam_type")
+                if existing_jam and existing_jam not in ("", "none"):
+                    if existing_jam not in known_jam_types:
+                        db.upsert_jam_type(name=existing_jam)
+                        known_jam_types.add(existing_jam)
+                        updated += 1
+
+            msg_info(f"  DB-based JAM linking: {updated} links established")
+        else:
+            msg_warn("No JAM-related functions found in functions table either")
 
     db.commit()
     msg_info(f"Linked {updated} handlers to JAM types")
