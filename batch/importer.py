@@ -449,7 +449,12 @@ def _import_db2_metadata(session, filepath):
 
 
 def _import_vtable_methods(session, filepath):
-    """Import wow_vtable_methods JSON → vtables/vtable_entries."""
+    """Import wow_vtable_methods JSON → vtables/vtable_entries.
+
+    Supports two formats:
+      - Flat: top-level "methods" is a list of {class_name, vtable_rva, slot, ...}
+      - Nested: top-level "methods" is a list of {class, vtable_rva, methods: [{slot, name, rva}]}
+    """
     db = session.db
     cfg = session.cfg
 
@@ -459,9 +464,9 @@ def _import_vtable_methods(session, filepath):
     methods = data.get("methods", [])
     count = 0
 
-    for method in methods:
-        class_name = method.get("class_name", method.get("class", ""))
-        vtable_rva = method.get("vtable_rva")
+    for entry in methods:
+        class_name = entry.get("class_name", entry.get("class", ""))
+        vtable_rva = entry.get("vtable_rva")
         if not vtable_rva:
             continue
         if isinstance(vtable_rva, str):
@@ -476,16 +481,30 @@ def _import_vtable_methods(session, filepath):
             source="vtable_methods",
         )
 
-        slot = method.get("slot", method.get("index", 0))
-        func_rva = method.get("func_rva", method.get("method_rva"))
-        if func_rva:
-            if isinstance(func_rva, str):
-                func_rva = int(func_rva, 16)
-            func_ea = cfg.rva_to_ea(func_rva)
-            func_name = method.get("name", method.get("method_name"))
-            db.upsert_vtable_entry(vtable_ea, slot, func_ea, func_name)
-
-        count += 1
+        # Nested format: entry has a "methods" sub-list
+        sub_methods = entry.get("methods")
+        if isinstance(sub_methods, list):
+            for sub in sub_methods:
+                slot = sub.get("slot", sub.get("index", 0))
+                func_rva = sub.get("rva", sub.get("func_rva", sub.get("method_rva")))
+                if func_rva:
+                    if isinstance(func_rva, str):
+                        func_rva = int(func_rva, 16)
+                    func_ea = cfg.rva_to_ea(func_rva)
+                    func_name = sub.get("name", sub.get("method_name"))
+                    db.upsert_vtable_entry(vtable_ea, slot, func_ea, func_name)
+                    count += 1
+        else:
+            # Flat format: entry itself is a single method
+            slot = entry.get("slot", entry.get("index", 0))
+            func_rva = entry.get("func_rva", entry.get("method_rva", entry.get("rva")))
+            if func_rva:
+                if isinstance(func_rva, str):
+                    func_rva = int(func_rva, 16)
+                func_ea = cfg.rva_to_ea(func_rva)
+                func_name = entry.get("name", entry.get("method_name"))
+                db.upsert_vtable_entry(vtable_ea, slot, func_ea, func_name)
+                count += 1
 
     db.commit()
     return count
@@ -508,12 +527,17 @@ def _import_lua_api(session, filepath):
         if not method:
             continue
 
-        handler_rva = func.get("handler_rva", func.get("address"))
-        handler_ea = 0
-        if handler_rva:
+        handler_rva = func.get("handler_rva", func.get("address", func.get("rva")))
+        handler_ea = func.get("ea")
+        if handler_ea:
+            if isinstance(handler_ea, str):
+                handler_ea = int(handler_ea, 16)
+        elif handler_rva:
             if isinstance(handler_rva, str):
                 handler_rva = int(handler_rva, 16)
             handler_ea = cfg.rva_to_ea(handler_rva)
+        else:
+            handler_ea = 0
 
         db.upsert_lua_api(
             namespace=namespace,

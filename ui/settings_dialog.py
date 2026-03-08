@@ -24,6 +24,8 @@ TC WoW Analyzer — Settings
 
 <##Paths##Extraction directory (JSON exports)\::{iExtractionDir}>
 <TrinityCore source directory\::{iTcSourceDir}>
+<Sniff directory (packet captures)\::{iSniffDir}>
+<DB2 data directory (dbfilesclient)\::{iDb2DataDir}>
 <Pipeline directory (optional)\::{iPipelineDir}>
 
 <##Build Configuration##Build number\::{iBuildNumber}>
@@ -41,6 +43,8 @@ TC WoW Analyzer — Settings
         # Pre-fill from current config
         extraction_dir = cfg.extraction_dir or ""
         tc_source_dir = cfg.tc_source_dir or ""
+        sniff_dir = cfg.sniff_dir or ""
+        db2_data_dir = cfg.db2_data_dir or ""
         pipeline_dir = cfg.get("pipeline_dir") or ""
         build_number = str(cfg.build_number) if cfg.build_number else ""
         image_base = f"0x{cfg.image_base:X}" if cfg.image_base else ""
@@ -57,6 +61,14 @@ TC WoW Analyzer — Settings
             ),
             "iTcSourceDir": ida_kernwin.Form.DirInput(
                 value=tc_source_dir,
+                swidth=60,
+            ),
+            "iSniffDir": ida_kernwin.Form.DirInput(
+                value=sniff_dir,
+                swidth=60,
+            ),
+            "iDb2DataDir": ida_kernwin.Form.DirInput(
+                value=db2_data_dir,
                 swidth=60,
             ),
             "iPipelineDir": ida_kernwin.Form.DirInput(
@@ -88,6 +100,8 @@ TC WoW Analyzer — Settings
 
         extraction_dir = self.iExtractionDir.value.strip()
         tc_source_dir = self.iTcSourceDir.value.strip()
+        sniff_dir = self.iSniffDir.value.strip()
+        db2_data_dir = self.iDb2DataDir.value.strip()
         pipeline_dir = self.iPipelineDir.value.strip()
         build_number = self.iBuildNumber.value.strip()
         image_base_str = self.iImageBase.value.strip()
@@ -96,6 +110,10 @@ TC WoW Analyzer — Settings
             cfg.set("extraction_dir", extraction_dir)
         if tc_source_dir:
             cfg.set("tc_source_dir", tc_source_dir)
+        if sniff_dir:
+            cfg.set("sniff_dir", sniff_dir)
+        if db2_data_dir:
+            cfg.set("db2_data_dir", db2_data_dir)
         if pipeline_dir:
             cfg.set("pipeline_dir", pipeline_dir)
 
@@ -791,9 +809,7 @@ def _run_single_task(session, task_name):
             candidates = [c for c in candidates if c != session.db.path]
             if candidates:
                 old_path = candidates[0]
-        if not old_path:
-            msg_warn("No previous build database found for delta analysis")
-            return 0
+        # Pass None to let analyze_build_delta generate a baseline report
         return analyze_build_delta(session, old_path)
 
     if task_name == "callee_contracts":

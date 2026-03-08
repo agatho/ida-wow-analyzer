@@ -1443,7 +1443,7 @@ def _resolve_db2_dir(session):
     cfg = session.cfg
 
     # Direct config
-    db2_dir = cfg.get("db2_data_dir")
+    db2_dir = cfg.db2_data_dir
     if db2_dir and os.path.isdir(db2_dir):
         return db2_dir
 

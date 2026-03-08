@@ -34,7 +34,7 @@ def import_tc_source(session, tc_source_dir=None):
     cfg = session.cfg
 
     if not tc_source_dir:
-        tc_source_dir = cfg.get("tc_source_dir", "")
+        tc_source_dir = cfg.tc_source_dir
     if not tc_source_dir or not os.path.isdir(tc_source_dir):
         msg_error("TrinityCore source directory not configured. Set tc_source_dir in Settings.")
         return 0

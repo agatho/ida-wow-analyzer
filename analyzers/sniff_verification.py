@@ -523,7 +523,7 @@ def _discover_sniff_files(session):
     search_dirs = []
 
     # Check sniff_dir config first
-    sniff_dir = session.cfg.get("sniff_dir")
+    sniff_dir = session.cfg.sniff_dir
     if sniff_dir and os.path.isdir(sniff_dir):
         search_dirs.append(sniff_dir)
 

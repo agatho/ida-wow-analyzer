@@ -39,6 +39,12 @@ _DEFAULTS = {
     # Global extraction directory fallback (when not set per-build)
     "extraction_dir": None,
 
+    # Directory containing packet sniff files (*.pkt or parsed sniff output)
+    "sniff_dir": None,
+
+    # Directory containing DB2 client data files (dbfilesclient)
+    "db2_data_dir": None,
+
     "known_rvas": {
         "main_dispatcher": 0,
         "mem_alloc": 0,
@@ -261,6 +267,16 @@ class PluginConfig:
     def tc_source_dir(self):
         """TrinityCore source tree path."""
         return self._data.get("tc_source_dir") or ""
+
+    @property
+    def sniff_dir(self):
+        """Directory containing packet sniff files."""
+        return self._data.get("sniff_dir") or ""
+
+    @property
+    def db2_data_dir(self):
+        """Directory containing DB2 client data files (dbfilesclient)."""
+        return self._data.get("db2_data_dir") or ""
 
     @property
     def known_rvas(self):

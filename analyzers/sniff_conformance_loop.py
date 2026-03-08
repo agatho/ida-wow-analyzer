@@ -385,7 +385,7 @@ def _discover_sniff_files(session, sniff_dir=None):
     if sniff_dir and os.path.isdir(sniff_dir):
         search_dirs.append(sniff_dir)
 
-    cfg_sniff_dir = session.cfg.get("sniff_dir") if hasattr(session.cfg, "get") else None
+    cfg_sniff_dir = session.cfg.sniff_dir or None
     if cfg_sniff_dir and os.path.isdir(cfg_sniff_dir):
         search_dirs.append(cfg_sniff_dir)
 
