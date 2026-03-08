@@ -1442,39 +1442,86 @@ def _resolve_db2_dir(session):
     """
     cfg = session.cfg
 
-    # Direct config
+    # Direct config — check if configured dir itself has DB2 files,
+    # or scan its subdirectories (locale dirs, dbfilesclient, dbc, etc.)
     db2_dir = cfg.db2_data_dir
     if db2_dir and os.path.isdir(db2_dir):
-        return db2_dir
+        if _dir_has_db2_files(db2_dir):
+            return db2_dir
+        # Scan subdirectories of the configured path
+        for c in _build_db2_dir_candidates(db2_dir):
+            if os.path.isdir(c) and _dir_has_db2_files(c):
+                return c
 
     # Per-build config
     build = str(cfg.build_number)
     if build and build != "0":
         db2_dir = cfg.get("builds", build, "db2_data_dir")
         if db2_dir and os.path.isdir(db2_dir):
-            return db2_dir
+            if _dir_has_db2_files(db2_dir):
+                return db2_dir
+            for c in _build_db2_dir_candidates(db2_dir):
+                if os.path.isdir(c) and _dir_has_db2_files(c):
+                    return c
 
     # Auto-detect: look for common subdirectories
+    search_roots = []
     extraction_dir = cfg.extraction_dir
     if extraction_dir and os.path.isdir(extraction_dir):
-        candidates = [
-            os.path.join(extraction_dir, "dbfilesclient"),
-            os.path.join(extraction_dir, "DBFilesClient"),
-            os.path.join(extraction_dir, "db2"),
-            os.path.join(extraction_dir, "DB2"),
-            extraction_dir,  # files might be directly in extraction_dir
-        ]
+        search_roots.append(extraction_dir)
+
+    for root in search_roots:
+        candidates = _build_db2_dir_candidates(root)
         for c in candidates:
-            if os.path.isdir(c):
-                # Verify it contains .db2 files
-                try:
-                    for f in os.listdir(c):
-                        if f.lower().endswith(".db2"):
-                            return c
-                except OSError:
-                    pass
+            if os.path.isdir(c) and _dir_has_db2_files(c):
+                return c
 
     return None
+
+
+# WoW locale codes used in CASC extractions and data directories
+_WOW_LOCALES = [
+    "enUS", "enGB", "deDE", "esES", "esMX", "frFR", "itIT",
+    "koKR", "ptBR", "ruRU", "zhCN", "zhTW",
+]
+
+
+def _build_db2_dir_candidates(base_dir):
+    """Build a prioritized list of candidate DB2 directories.
+
+    Checks the base directory itself, common subdirectory names
+    (dbfilesclient, DB2, dbc), and locale subdirectories (enUS, etc.).
+    """
+    candidates = [
+        os.path.join(base_dir, "dbfilesclient"),
+        os.path.join(base_dir, "DBFilesClient"),
+        os.path.join(base_dir, "db2"),
+        os.path.join(base_dir, "DB2"),
+        os.path.join(base_dir, "dbc"),
+        os.path.join(base_dir, "DBC"),
+    ]
+    # Check locale subdirectories (e.g. enUS/dbfilesclient)
+    for locale in _WOW_LOCALES:
+        locale_dir = os.path.join(base_dir, locale)
+        candidates.append(locale_dir)
+        candidates.append(os.path.join(locale_dir, "dbfilesclient"))
+        candidates.append(os.path.join(locale_dir, "DBFilesClient"))
+        candidates.append(os.path.join(locale_dir, "db2"))
+        candidates.append(os.path.join(locale_dir, "dbc"))
+    # Also check if base_dir itself contains .db2 files
+    candidates.append(base_dir)
+    return candidates
+
+
+def _dir_has_db2_files(path):
+    """Check if a directory contains any .db2 files."""
+    try:
+        for f in os.listdir(path):
+            if f.lower().endswith(".db2"):
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def _find_db2_file(db2_dir, table_name):
