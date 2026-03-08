@@ -34,7 +34,7 @@ from tc_wow_analyzer.core.utils import (
 # operator new(size) — standard heap allocation
 _OP_NEW_RE = re.compile(
     r'(\w+)\s*=\s*(?:\(\s*\w[\w\s\*]*\s*\)\s*)?'       # v5 = (Type *)
-    r'(?:operator\s+new|j_?operator_new|??2@YAPAXI|'     # operator new variants
+    r'(?:operator\s+new|j_?operator_new|\?\?2@YAPAXI|'    # operator new variants
     r'_(?:o_)?(?:malloc|calloc)|(?:j_)?(?:malloc|calloc))' # malloc/calloc
     r'\s*\(\s*(0x[0-9A-Fa-f]+|\d+)',                      # (size
     re.IGNORECASE

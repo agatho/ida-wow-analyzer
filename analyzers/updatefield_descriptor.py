@@ -416,15 +416,35 @@ def _find_seed_strings(rdata_start, rdata_end):
     found = {}
 
     for seed in SEED_STRINGS:
-        # Search for the string as bytes in .rdata
+        # Search for the string as bytes in .rdata using IDA 9.3 API
         seed_bytes = seed.encode("ascii") + b"\x00"
         ea = rdata_start
         while ea < rdata_end:
-            ea = ida_bytes.bin_search(
-                ea, rdata_end, seed_bytes, None,
-                idaapi.BIN_SEARCH_FORWARD | idaapi.BIN_SEARCH_NOCASE,
-                0
-            )
+            # Use compiled_binpat_vec_t for IDA 9.3+ bin_search
+            try:
+                binpat = ida_bytes.compiled_binpat_vec_t()
+                ida_bytes.parse_binpat_str(
+                    binpat, 0,
+                    " ".join(f"{b:02X}" for b in seed_bytes),
+                    16  # radix=hex
+                )
+                ea = ida_bytes.bin_search(
+                    ea, rdata_end, binpat,
+                    ida_bytes.BIN_SEARCH_FORWARD
+                )
+            except (TypeError, AttributeError):
+                # Fallback: scan manually
+                ea = idaapi.BADADDR
+                scan = rdata_start
+                while scan < rdata_end - len(seed_bytes):
+                    chunk = ida_bytes.get_bytes(scan, len(seed_bytes))
+                    if chunk == seed_bytes:
+                        ea = scan
+                        break
+                    scan += 1
+                    if scan - rdata_start > 0x1000000:
+                        break  # safety cap at 16MB
+
             if ea == idaapi.BADADDR:
                 break
 

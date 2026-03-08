@@ -830,14 +830,20 @@ def _generate_element_preview(ea, element_size, count, element_type):
             f1 = _read_float_safe(elem_ea)
             f2 = _read_float_safe(elem_ea + 4)
             f3 = _read_float_safe(elem_ea + 8)
-            preview.append(f"[{i}] ({f1:.3f}, {f2:.3f}, {f3:.3f})")
+            if f1 is not None and f2 is not None and f3 is not None:
+                preview.append(f"[{i}] ({f1:.3f}, {f2:.3f}, {f3:.3f})")
+            else:
+                preview.append(f"[{i}] ???")
 
         elif element_type == "float4":
             f1 = _read_float_safe(elem_ea)
             f2 = _read_float_safe(elem_ea + 4)
             f3 = _read_float_safe(elem_ea + 8)
             f4 = _read_float_safe(elem_ea + 12)
-            preview.append(f"[{i}] ({f1:.3f}, {f2:.3f}, {f3:.3f}, {f4:.3f})")
+            if f1 is not None and f2 is not None and f3 is not None and f4 is not None:
+                preview.append(f"[{i}] ({f1:.3f}, {f2:.3f}, {f3:.3f}, {f4:.3f})")
+            else:
+                preview.append(f"[{i}] ???")
 
         else:
             # Generic struct preview: show raw bytes
