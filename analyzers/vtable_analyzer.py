@@ -20,24 +20,39 @@ def analyze_vtables(session):
     """Discover and analyze virtual function tables.
 
     Multi-strategy approach:
-      1. Import from existing vtable_master_database.json if available
-      2. Scan .rdata for pointer arrays that look like vtables
-      3. Use constructor patterns to identify vtable writes
-      4. Cross-reference with existing RTTI (only 6 COLs in WoW)
+      1. Check if vtables were already imported from JSON
+      2. Import from existing vtable_master_database.json if available
+      3. Scan .rdata for pointer arrays that look like vtables
+      4. Use constructor patterns to identify vtable writes
+      5. Cross-reference with existing RTTI (only 6 COLs in WoW)
     """
     db = session.db
     cfg = session.cfg
 
+    # If vtables were already imported, report the count
+    existing = db.count("vtables")
+    if existing > 0:
+        msg_info(f"VTable analyzer: {existing} vtables already in DB "
+                 f"(from JSON import)")
+        return existing
+
     import os
     # Try to import from existing extraction
+    ext_dir = cfg.extraction_dir
+    if ext_dir:
+        vtable_file = os.path.join(ext_dir, "vtable_master_database.json")
+        if os.path.isfile(vtable_file):
+            return _import_vtable_database(session, vtable_file)
+
     for build_str in [str(cfg.build_number)]:
         build_info = cfg.get("builds", build_str)
         if not build_info:
             continue
-        ext_dir = build_info.get("extraction_dir", "")
-        vtable_file = os.path.join(ext_dir, "vtable_master_database.json")
-        if os.path.isfile(vtable_file):
-            return _import_vtable_database(session, vtable_file)
+        bd = build_info.get("extraction_dir", "")
+        if bd:
+            vtable_file = os.path.join(bd, "vtable_master_database.json")
+            if os.path.isfile(vtable_file):
+                return _import_vtable_database(session, vtable_file)
 
     msg_warn("No existing vtable database found — scanning binary")
     return _scan_for_vtables(session)

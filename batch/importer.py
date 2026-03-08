@@ -144,9 +144,118 @@ def run_import(session, dumps_dir=None):
     })
     db.commit()
 
+    # ── Post-import config synthesis ──────────────────────────────────
+    # Populate config values that binary analyzers depend on, using the
+    # data we just imported.  This bridges the gap between "data in DB"
+    # and "config values the analyzers check before running".
+    _synthesize_config(session, dumps_dir, build)
+
     msg_info(f"Import complete: {total} records from {len(results)} files "
              f"in {elapsed:.1f}s")
     return results
+
+
+def _synthesize_config(session, dumps_dir, build):
+    """Populate config from imported DB data so binary analyzers work."""
+    db = session.db
+    cfg = session.cfg
+
+    changed = False
+
+    # 1. Fill builds entry with image_base and extraction_dir
+    build_str = str(build)
+    if not cfg.get("builds", build_str):
+        cfg.set("builds", build_str, {
+            "image_base": cfg.image_base,
+            "extraction_dir": dumps_dir,
+        })
+        changed = True
+        msg_info(f"Config: added builds.{build_str} "
+                 f"(image_base=0x{cfg.image_base:X})")
+    else:
+        # Ensure extraction_dir is set even if builds entry exists
+        if not cfg.get("builds", build_str, "extraction_dir"):
+            cfg.set("builds", build_str, "extraction_dir", dumps_dir)
+            changed = True
+
+    # 2. Set build_number if not already set
+    if not cfg.get("build_number"):
+        cfg.set("build_number", int(build))
+        changed = True
+        msg_info(f"Config: set build_number={build}")
+
+    # 3. Extract dispatch_range from imported opcode data
+    dispatch = cfg.dispatch_range
+    if not dispatch or not dispatch.get("count"):
+        opcode_count = db.count("opcodes")
+        if opcode_count > 0:
+            # Get min/max internal_index to determine range
+            row = db.fetchone(
+                "SELECT MIN(internal_index) as mn, MAX(internal_index) as mx "
+                "FROM opcodes")
+            if row:
+                cfg.set("dispatch_range", "start", row["mn"])
+                cfg.set("dispatch_range", "end", row["mx"])
+                cfg.set("dispatch_range", "count", opcode_count)
+                changed = True
+                msg_info(f"Config: set dispatch_range "
+                         f"(start=0x{row['mn']:X}, count={opcode_count})")
+
+    # 4. Extract dispatch table RVA from the JSON if available
+    dispatch_json = os.path.join(dumps_dir,
+                                 f"wow_opcode_dispatch_{build}.json")
+    if os.path.isfile(dispatch_json):
+        try:
+            with open(dispatch_json, "r", encoding="utf-8") as f:
+                opcode_data = json.load(f)
+            tables = opcode_data.get("dispatch_tables", [])
+            if tables:
+                table_rva = tables[0].get("table_rva")
+                if table_rva:
+                    if isinstance(table_rva, str):
+                        table_rva = int(table_rva, 16)
+                    if not cfg.known_rvas.get("main_dispatcher"):
+                        cfg.set("known_rvas", "main_dispatcher", table_rva)
+                        changed = True
+                        msg_info(f"Config: set main_dispatcher "
+                                 f"RVA=0x{table_rva:X}")
+        except Exception as e:
+            msg_warn(f"Config: could not extract dispatch table RVA: {e}")
+
+    # 5. Find serializer function RVAs from imported function names
+    serializer_patterns = {
+        "write_uint32": ["%WriteUInt32%", "%ByteBuffer::WriteUInt32%"],
+        "write_uint8": ["%WriteUInt8%", "%ByteBuffer::WriteUInt8%"],
+        "write_float": ["%WriteFloat%", "%ByteBuffer::WriteFloat%"],
+        "write_bits": ["%WriteBits%", "%ByteBuffer::WriteBits%"],
+        "flush_bits": ["%FlushBits%", "%ByteBuffer::FlushBits%"],
+        "write_object_guid": ["%WritePackedGuid%",
+                              "%ObjectGuid::WriteAsPacked%"],
+    }
+    for key, patterns in serializer_patterns.items():
+        if cfg.known_rvas.get(key):
+            continue  # already set
+        for pat in patterns:
+            row = db.fetchone(
+                "SELECT rva FROM functions WHERE name LIKE ? LIMIT 1",
+                (pat,))
+            if row and row["rva"]:
+                cfg.set("known_rvas", key, row["rva"])
+                changed = True
+                msg_info(f"Config: set known_rvas.{key} = 0x{row['rva']:X}")
+                break
+
+    # 6. Set extraction_dir globally if not set
+    if not cfg.get("extraction_dir"):
+        cfg.set("extraction_dir", dumps_dir)
+        changed = True
+
+    if changed:
+        saved = cfg.save()
+        if saved:
+            msg_info(f"Config: saved synthesized values to {saved}")
+        else:
+            msg_warn("Config: could not save (no IDB path?)")
 
 
 def _import_functions(session, filepath):

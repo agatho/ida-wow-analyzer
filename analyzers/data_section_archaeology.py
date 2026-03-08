@@ -1235,6 +1235,7 @@ def _scan_global_variables(data_segments, text_seg):
     Returns a list of global variable descriptors.
     """
     globals_list = []
+    _MAX_GLOBALS = 50000  # Safety cap to prevent OOM on huge .data sections
 
     for seg, seg_name in data_segments:
         if seg_name != ".data":
@@ -1247,6 +1248,10 @@ def _scan_global_variables(data_segments, text_seg):
         processed = set()
 
         while ea < end:
+            if len(globals_list) >= _MAX_GLOBALS:
+                msg_warn(f"  Global variable scan capped at {_MAX_GLOBALS}")
+                break
+
             if ea in processed:
                 ea += _PTR_SIZE
                 continue

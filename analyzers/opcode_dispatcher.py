@@ -230,18 +230,27 @@ def analyze_opcode_dispatcher(session):
     """Find and analyze the main opcode dispatch table.
 
     Strategy:
-      1. Use the known dispatcher RVA from config (if available)
-      2. Otherwise, auto-detect by finding functions with highest
+      1. Check if opcodes were already imported from JSON
+      2. Use the known dispatcher RVA from config (if available)
+      3. Otherwise, auto-detect by finding functions with highest
          call fan-out and largest switch tables
-      3. Extract handler pointers from the dispatch table
-      4. Map handlers to TrinityCore opcode names via string refs
+      4. Extract handler pointers from the dispatch table
+      5. Map handlers to TrinityCore opcode names via string refs
     """
     db = session.db
     cfg = session.cfg
+
+    # If opcodes were already imported, report the count
+    existing = db.count("opcodes")
+    if existing > 0:
+        msg_info(f"Opcode dispatcher: {existing} opcodes already in DB "
+                 f"(from JSON import)")
+        return existing
+
     disp = cfg.dispatch_range
 
-    if not disp:
-        msg_error("No dispatch range configured")
+    if not disp or not disp.get("count"):
+        msg_error("No dispatch range configured and no imported opcodes found")
         return 0
 
     dispatcher_rva = cfg.known_rvas.get("main_dispatcher")

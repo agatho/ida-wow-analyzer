@@ -378,8 +378,8 @@ def _find_rdata_segment():
         if name and "rdata" in name.lower():
             return seg.start_ea, seg.end_ea
         # Check for read-only data segment (perm = read, no write, no exec)
-        if seg.perm == ida_segment.SFL_LOADER:
-            # Not reliable, skip
+        if seg.perm & 1:
+            # Executable segment — not a data segment, skip
             continue
 
     # Another fallback: try ".rodata" (Linux) or "CONST" (some builds)

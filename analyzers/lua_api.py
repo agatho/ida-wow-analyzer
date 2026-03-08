@@ -16,23 +16,38 @@ def analyze_lua_api(session):
     """Discover Lua API functions from the binary.
 
     Strategy:
-      1. Import from existing lua_api_mapping.json if available
-      2. Otherwise, scan for FrameScript::RegisterFunction pattern
+      1. Check if Lua API was already imported from JSON
+      2. Import from existing lua_api_mapping.json if available
+      3. Otherwise, scan for FrameScript::RegisterFunction pattern
     """
     db = session.db
     cfg = session.cfg
 
+    # If lua_api was already imported, report the count
+    existing = db.count("lua_api")
+    if existing > 0:
+        msg_info(f"Lua API: {existing} entries already in DB "
+                 f"(from JSON import)")
+        return existing
+
     import os
-    # Try existing extraction
+    # Try existing extraction — check global extraction_dir first
+    ext_dir = cfg.extraction_dir
+    if ext_dir:
+        lua_file = os.path.join(ext_dir, "lua_api_mapping.json")
+        if os.path.isfile(lua_file):
+            return _import_lua_api_json(session, lua_file)
+
+    # Fall back to per-build extraction directories
     for build_str in [str(cfg.build_number)]:
         build_info = cfg.get("builds", build_str)
         if not build_info:
             continue
         for subdir in ["enriched_dir", "extraction_dir"]:
-            ext_dir = build_info.get(subdir, "")
-            if not ext_dir:
+            bd = build_info.get(subdir, "")
+            if not bd:
                 continue
-            lua_file = os.path.join(ext_dir, "lua_api_mapping.json")
+            lua_file = os.path.join(bd, "lua_api_mapping.json")
             if os.path.isfile(lua_file):
                 return _import_lua_api_json(session, lua_file)
 

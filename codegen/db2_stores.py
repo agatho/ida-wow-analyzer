@@ -58,7 +58,7 @@ def generate_loadinfo(session, table_name):
     if not row:
         return f"// DB2 table '{table_name}' not found\n"
 
-    fields_json = row.get("fields_json")
+    fields_json = row["fields_json"]
     if not fields_json:
         # Generate skeleton from field_count
         return _generate_skeleton_loadinfo(table_name, row)
@@ -159,7 +159,7 @@ def generate_entry_struct(session, table_name):
     if not row:
         return f"// DB2 table '{table_name}' not found\n"
 
-    fields_json = row.get("fields_json")
+    fields_json = row["fields_json"]
     if not fields_json:
         return _generate_skeleton_entry(table_name, row)
 

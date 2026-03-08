@@ -59,16 +59,26 @@ def analyze_jam_types(session):
     """Discover JAM types by scanning for serializer/deserializer patterns.
 
     Strategy:
-      1. Find functions that call known Write*/Read* serializer functions
-      2. Group them by the JAM type they operate on (from function name or caller)
-      3. Decompile each serializer to extract field order and types
+      1. Check if JAM types were already imported from JSON
+      2. Find functions that call known Write*/Read* serializer functions
+      3. Group them by the JAM type they operate on (from function name or caller)
+      4. Decompile each serializer to extract field order and types
     """
     db = session.db
     cfg = session.cfg
 
-    # First, import existing JAM type data if available
+    # If jam_types were already imported, report the count
+    existing = db.count("jam_types")
+    if existing > 0:
+        msg_info(f"JAM recovery: {existing} JAM types already in DB "
+                 f"(from JSON import)")
+        return existing
+
+    # Try to import existing JAM type data if available
     import os
     extraction_dir = cfg.get("builds", str(cfg.build_number), "extraction_dir")
+    if not extraction_dir:
+        extraction_dir = cfg.extraction_dir
     if extraction_dir:
         jam_file = os.path.join(extraction_dir,
                                 f"wow_jam_messages_{cfg.build_number}.json")

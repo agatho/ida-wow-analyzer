@@ -781,7 +781,20 @@ def _run_single_task(session, task_name):
 
     if task_name == "build_delta":
         from tc_wow_analyzer.analyzers.build_delta import analyze_build_delta
-        return analyze_build_delta(session, None)
+        # Auto-discover previous build DB path
+        old_path = session.db.kv_get("previous_build_db_path")
+        if not old_path:
+            # Try to find a previous .tc_wow.db next to current one
+            import glob
+            db_dir = os.path.dirname(session.db.path)
+            candidates = glob.glob(os.path.join(db_dir, "*.tc_wow.db"))
+            candidates = [c for c in candidates if c != session.db.path]
+            if candidates:
+                old_path = candidates[0]
+        if not old_path:
+            msg_warn("No previous build database found for delta analysis")
+            return 0
+        return analyze_build_delta(session, old_path)
 
     if task_name == "callee_contracts":
         from tc_wow_analyzer.analyzers.callee_contracts import recover_contracts

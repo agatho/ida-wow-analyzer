@@ -59,8 +59,17 @@ def analyze_db2_metadata(session):
     db = session.db
     cfg = session.cfg
 
+    # If db2_tables were already imported, report the count
+    existing = db.count("db2_tables")
+    if existing > 0:
+        msg_info(f"DB2 metadata: {existing} tables already in DB "
+                 f"(from JSON import)")
+        return existing
+
     # Strategy: Find all named DB2 metadata addresses from existing extractions
     extraction_dir = cfg.get("builds", str(cfg.build_number), "extraction_dir")
+    if not extraction_dir:
+        extraction_dir = cfg.extraction_dir
     if not extraction_dir:
         msg_warn("No extraction directory configured for current build")
         return _scan_for_db2_meta_patterns(session)

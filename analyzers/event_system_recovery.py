@@ -960,7 +960,7 @@ def _recover_observer_patterns(db):
     # Build class → vtable entries map
     class_vtables = defaultdict(list)
     for vt in vtables:
-        class_name = vt.get("class_name") or ""
+        class_name = vt["class_name"] or ""
         if class_name:
             class_vtables[class_name].append(vt)
 
@@ -969,7 +969,7 @@ def _recover_observer_patterns(db):
     if _table_exists(db, "vtable_entries"):
         entries = db.fetchall("SELECT * FROM vtable_entries")
         for entry in entries:
-            vt_ea = entry.get("vtable_ea")
+            vt_ea = entry["vtable_ea"]
             if vt_ea not in vtable_entries:
                 vtable_entries[vt_ea] = []
             vtable_entries[vt_ea].append(entry)
@@ -979,15 +979,15 @@ def _recover_observer_patterns(db):
     for class_name, class_vts in class_vtables.items():
         on_methods = []
         for vt in class_vts:
-            vt_ea = vt.get("ea")
+            vt_ea = vt["ea"]
             entries = vtable_entries.get(vt_ea, [])
             for entry in entries:
-                fname = entry.get("func_name", "")
+                fname = entry["func_name"] or ""
                 if _is_observer_method(fname):
                     on_methods.append({
                         "name": fname,
-                        "slot": entry.get("slot_index", -1),
-                        "ea": entry.get("func_ea", 0),
+                        "slot": entry["slot_index"],
+                        "ea": entry["func_ea"],
                     })
 
         if len(on_methods) >= 2:
@@ -1052,20 +1052,21 @@ def _find_interface_implementations(iface_name, methods, class_vtables,
 
         shared_methods = set()
         for vt in class_vts:
-            vt_ea = vt.get("ea")
+            vt_ea = vt["ea"]
             entries = vtable_entries.get(vt_ea, [])
             for entry in entries:
-                fname = entry.get("func_name", "")
+                fname = entry["func_name"] or ""
                 if fname in method_names:
                     shared_methods.add(fname)
 
         # If class shares more than half the observer methods,
         # it's likely an implementation
         if len(shared_methods) >= max(1, len(method_names) // 2):
+            total_methods = len(method_names) or 1  # guard div-by-zero
             implementations.append({
                 "class_name": class_name,
                 "shared_methods": sorted(shared_methods),
-                "coverage": round(len(shared_methods) / len(method_names) * 100, 1),
+                "coverage": round(len(shared_methods) / total_methods * 100, 1),
             })
 
     return sorted(implementations, key=lambda x: -x["coverage"])[:20]

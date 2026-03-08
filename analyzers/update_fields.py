@@ -59,12 +59,20 @@ def analyze_update_fields(session):
     """Discover update field descriptors from the binary.
 
     Strategy:
-      1. Import from existing wow_updatefields JSON if available
-      2. Try wow_object_layouts JSON as fallback
-      3. Otherwise, scan for descriptor table patterns in .rdata
+      1. Check if update fields were already imported from JSON
+      2. Import from existing wow_updatefields JSON if available
+      3. Try wow_object_layouts JSON as fallback
+      4. Otherwise, scan for descriptor table patterns in .rdata
     """
     db = session.db
     cfg = session.cfg
+
+    # If update_fields were already imported, report the count
+    existing = db.count("update_fields")
+    if existing > 0:
+        msg_info(f"Update fields: {existing} fields already in DB "
+                 f"(from JSON import)")
+        return existing
 
     ext_dir = cfg.extraction_dir
     if ext_dir:
