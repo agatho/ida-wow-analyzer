@@ -167,9 +167,14 @@ def _get_cfg_metrics(func):
     edge_count = 0
     for block in flowchart:
         bb_count += 1
-        # Count successors
-        for succ_idx in range(block.nsucc()):
-            edge_count += 1
+        # Count successors (IDA 9: iterate succs(), older: nsucc())
+        try:
+            edge_count += sum(1 for _ in block.succs())
+        except AttributeError:
+            try:
+                edge_count += block.nsucc()
+            except AttributeError:
+                pass
 
     return bb_count, edge_count
 

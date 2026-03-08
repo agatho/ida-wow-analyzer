@@ -428,10 +428,12 @@ def _find_seed_strings(rdata_start, rdata_end):
                     " ".join(f"{b:02X}" for b in seed_bytes),
                     16  # radix=hex
                 )
-                ea = ida_bytes.bin_search(
+                result = ida_bytes.bin_search(
                     ea, rdata_end, binpat,
                     ida_bytes.BIN_SEARCH_FORWARD
                 )
+                # IDA 9.3 returns (ea, pattern_idx) tuple
+                ea = result[0] if isinstance(result, tuple) else result
             except (TypeError, AttributeError):
                 # Fallback: scan manually
                 ea = idaapi.BADADDR
@@ -490,10 +492,20 @@ def _find_seed_strings_fullscan():
             if seed in found:
                 continue
             seed_bytes = seed.encode("ascii") + b"\x00"
-            ea = ida_bytes.bin_search(
-                seg.start_ea, seg.end_ea, seed_bytes, None,
-                idaapi.BIN_SEARCH_FORWARD, 0
-            )
+            try:
+                binpat = ida_bytes.compiled_binpat_vec_t()
+                ida_bytes.parse_binpat_str(
+                    binpat, 0,
+                    " ".join(f"{b:02X}" for b in seed_bytes),
+                    16
+                )
+                result = ida_bytes.bin_search(
+                    seg.start_ea, seg.end_ea, binpat,
+                    ida_bytes.BIN_SEARCH_FORWARD
+                )
+                ea = result[0] if isinstance(result, tuple) else result
+            except (TypeError, AttributeError):
+                ea = idaapi.BADADDR
             if ea != idaapi.BADADDR:
                 actual = _read_string_at(ea)
                 if actual == seed:
@@ -607,11 +619,27 @@ def _scan_for_pointer(target_ea, rdata_start, rdata_end):
     target_bytes = struct.pack("<Q", target_ea)
 
     ea = rdata_start
-    while ea < rdata_end - 8:
-        ea = ida_bytes.bin_search(
-            ea, rdata_end, target_bytes, None,
-            idaapi.BIN_SEARCH_FORWARD, 0
+    # Build compiled pattern for IDA 9.3+ bin_search
+    try:
+        binpat = ida_bytes.compiled_binpat_vec_t()
+        ida_bytes.parse_binpat_str(
+            binpat, 0,
+            " ".join(f"{b:02X}" for b in target_bytes),
+            16
         )
+        use_compiled = True
+    except (TypeError, AttributeError):
+        use_compiled = False
+
+    while ea < rdata_end - 8:
+        if use_compiled:
+            result = ida_bytes.bin_search(
+                ea, rdata_end, binpat,
+                ida_bytes.BIN_SEARCH_FORWARD
+            )
+            ea = result[0] if isinstance(result, tuple) else result
+        else:
+            ea = idaapi.BADADDR
         if ea == idaapi.BADADDR:
             break
         # Ensure alignment (descriptor entries should be at least 4-byte aligned)
