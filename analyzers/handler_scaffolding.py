@@ -220,7 +220,7 @@ def _classify_handler(tc_name):
 def _collect_handler_data(session, handler_row):
     """Gather ALL analyzer results for a single handler into HandlerData."""
     db = session.db
-    tc_name = handler_row["tc_name"] or handler_row.get("jam_type") or f"handler_{handler_row['internal_index']}"
+    tc_name = handler_row["tc_name"] or handler_row["jam_type"] or f"handler_{handler_row['internal_index']}"
     handler_ea = handler_row["handler_ea"]
     jam_type = handler_row["jam_type"]
 
@@ -1534,7 +1534,7 @@ def generate_all_scaffolds(session):
     error_count = 0
 
     for i, handler_row in enumerate(handlers):
-        tc_name = handler_row["tc_name"] or handler_row.get("jam_type") or f"handler_{handler_row['internal_index']}"
+        tc_name = handler_row["tc_name"] or handler_row["jam_type"] or f"handler_{handler_row['internal_index']}"
         try:
             hd = _collect_handler_data(session, handler_row)
             cpp_code, metadata = _assemble_scaffold(hd)

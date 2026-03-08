@@ -1634,79 +1634,85 @@ def analyze_db2_content(session):
     encrypted_count = 0
 
     for table_name, filepath in db2_files:
-        db2 = DB2File(filepath)
-        if not db2.parse():
+        try:
+            db2 = DB2File(filepath)
+            if not db2.parse():
+                parse_errors += 1
+                continue
+
+            if db2.row_count == 0:
+                # Check if all sections are encrypted
+                all_encrypted = all(sh.is_encrypted
+                                    for sh in db2.section_headers
+                                    if sh.record_count > 0)
+                if all_encrypted and db2.section_headers:
+                    encrypted_count += 1
+                continue
+
+            all_table_data[table_name] = db2
+            total_rows += db2.row_count
+            tables_analyzed += 1
+
+            # Validate against known metadata
+            meta = meta_by_name.get(table_name)
+            validation_notes = []
+            if meta:
+                expected_fields = meta.get("field_count", 0)
+                actual_fields = db2.get_field_count()
+                if expected_fields and actual_fields != expected_fields:
+                    validation_notes.append(
+                        f"field_count: expected {expected_fields}, got {actual_fields}")
+                expected_rec_size = meta.get("record_size", 0)
+                if expected_rec_size and db2.header.record_size != expected_rec_size:
+                    validation_notes.append(
+                        f"record_size: expected {expected_rec_size}, "
+                        f"got {db2.header.record_size}")
+
+            # Compute per-field statistics
+            field_count = db2.get_field_count()
+            field_stats = []
+            enum_fields = []
+            flag_fields = []
+            string_fields = []
+
+            for fi in range(field_count):
+                stats = _compute_field_statistics(db2.rows, fi)
+                stats["field_index"] = fi
+                field_stats.append(stats)
+
+                if stats.get("is_possible_enum"):
+                    enum_fields.append(fi)
+                if stats.get("is_possible_flags"):
+                    flag_fields.append(fi)
+                if stats.get("value_type") == "string":
+                    string_fields.append({
+                        "index": fi,
+                        "classification": stats.get("string_classification", "unknown"),
+                    })
+
+            table_stat = {
+                "name": table_name,
+                "row_count": db2.row_count,
+                "field_count": field_count,
+                "record_size": db2.header.record_size,
+                "format": db2.header.magic_name,
+                "layout_hash": f"0x{db2.header.layout_hash:08X}",
+                "id_range": [db2.header.min_id, db2.header.max_id],
+                "section_count": db2.header.section_count,
+                "has_offset_map": db2.header.has_offset_map,
+                "foreign_keys": [],  # filled in later
+                "enum_fields": enum_fields,
+                "flag_fields": flag_fields,
+                "string_fields": string_fields,
+                "field_stats": field_stats,
+                "validation_notes": validation_notes,
+            }
+            table_stats_list.append(table_stat)
+        except Exception as e:
             parse_errors += 1
+            if str(e):
+                msg_warn(f"  Error processing {table_name}: {e}")
             continue
-
-        if db2.row_count == 0:
-            # Check if all sections are encrypted
-            all_encrypted = all(sh.is_encrypted
-                                for sh in db2.section_headers
-                                if sh.record_count > 0)
-            if all_encrypted and db2.section_headers:
-                encrypted_count += 1
-            continue
-
-        all_table_data[table_name] = db2
-        total_rows += db2.row_count
-        tables_analyzed += 1
-
-        # Validate against known metadata
-        meta = meta_by_name.get(table_name)
-        validation_notes = []
-        if meta:
-            expected_fields = meta.get("field_count", 0)
-            actual_fields = db2.get_field_count()
-            if expected_fields and actual_fields != expected_fields:
-                validation_notes.append(
-                    f"field_count: expected {expected_fields}, got {actual_fields}")
-            expected_rec_size = meta.get("record_size", 0)
-            if expected_rec_size and db2.header.record_size != expected_rec_size:
-                validation_notes.append(
-                    f"record_size: expected {expected_rec_size}, "
-                    f"got {db2.header.record_size}")
-
-        # Compute per-field statistics
-        field_count = db2.get_field_count()
-        field_stats = []
-        enum_fields = []
-        flag_fields = []
-        string_fields = []
-
-        for fi in range(field_count):
-            stats = _compute_field_statistics(db2.rows, fi)
-            stats["field_index"] = fi
-            field_stats.append(stats)
-
-            if stats.get("is_possible_enum"):
-                enum_fields.append(fi)
-            if stats.get("is_possible_flags"):
-                flag_fields.append(fi)
-            if stats.get("value_type") == "string":
-                string_fields.append({
-                    "index": fi,
-                    "classification": stats.get("string_classification", "unknown"),
-                })
-
-        table_stat = {
-            "name": table_name,
-            "row_count": db2.row_count,
-            "field_count": field_count,
-            "record_size": db2.header.record_size,
-            "format": db2.header.magic_name,
-            "layout_hash": f"0x{db2.header.layout_hash:08X}",
-            "id_range": [db2.header.min_id, db2.header.max_id],
-            "section_count": db2.header.section_count,
-            "has_offset_map": db2.header.has_offset_map,
-            "foreign_keys": [],  # filled in later
-            "enum_fields": enum_fields,
-            "flag_fields": flag_fields,
-            "string_fields": string_fields,
-            "field_stats": field_stats,
-            "validation_notes": validation_notes,
-        }
-        table_stats_list.append(table_stat)
 
         # Progress logging every 50 tables
         if tables_analyzed % 50 == 0:
@@ -1717,9 +1723,13 @@ def analyze_db2_content(session):
              f"{parse_errors} errors, {encrypted_count} encrypted)")
 
     # Detect foreign key relationships
-    msg(f"  Detecting foreign key relationships...")
-    relationships = _detect_foreign_keys(all_table_data)
-    msg_info(f"Found {len(relationships)} potential foreign key relationships")
+    relationships = []
+    try:
+        msg(f"  Detecting foreign key relationships...")
+        relationships = _detect_foreign_keys(all_table_data)
+        msg_info(f"Found {len(relationships)} potential foreign key relationships")
+    except Exception as e:
+        msg_warn(f"  Foreign key detection failed: {e}")
 
     # Annotate table stats with their foreign keys
     fk_by_table = {}
@@ -1734,21 +1744,32 @@ def analyze_db2_content(session):
         ts["foreign_keys"] = fk_by_table.get(ts["name"], [])
 
     # Build relationship graph
-    msg(f"  Building relationship graph...")
-    rel_graph = _build_relationship_graph(relationships, all_table_data)
+    rel_graph = {}
+    try:
+        msg(f"  Building relationship graph...")
+        rel_graph = _build_relationship_graph(relationships, all_table_data)
+    except Exception as e:
+        msg_warn(f"  Relationship graph failed: {e}")
 
     # Detect hierarchical relationships
-    hierarchies = _detect_hierarchical_relationships(
-        all_table_data, db_tables_metadata)
-    msg_info(f"Found {len(hierarchies)} hierarchical (parent-child) relationships")
+    hierarchies = []
+    try:
+        hierarchies = _detect_hierarchical_relationships(
+            all_table_data, db_tables_metadata)
+        msg_info(f"Found {len(hierarchies)} hierarchical (parent-child) relationships")
+    except Exception as e:
+        msg_warn(f"  Hierarchy detection failed: {e}")
 
     # TC source comparison
     tc_mismatches = []
     tc_source_dir = cfg.tc_source_dir
     if tc_source_dir and os.path.isdir(tc_source_dir):
-        msg(f"  Comparing with TrinityCore source at {tc_source_dir}...")
-        tc_mismatches = _compare_with_tc_source(all_table_data, tc_source_dir)
-        msg_info(f"Found {len(tc_mismatches)} TC comparison mismatches")
+        try:
+            msg(f"  Comparing with TrinityCore source at {tc_source_dir}...")
+            tc_mismatches = _compare_with_tc_source(all_table_data, tc_source_dir)
+            msg_info(f"Found {len(tc_mismatches)} TC comparison mismatches")
+        except Exception as e:
+            msg_warn(f"  TC source comparison failed: {e}")
     else:
         msg(f"  Skipping TC source comparison (tc_source_dir not configured)")
 

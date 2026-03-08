@@ -1998,7 +1998,7 @@ def simulate_execution(session):
     for idx, handler in enumerate(handlers):
         ea = handler["handler_ea"]
         tc_name = handler["tc_name"] or f"handler_{ea_str(ea)}"
-        opcode_value = handler.get("opcode_value", 0)
+        opcode_value = handler["opcode_value"] if "opcode_value" in handler.keys() else 0
 
         # Decompile
         pseudocode = get_decompiled_text(ea)

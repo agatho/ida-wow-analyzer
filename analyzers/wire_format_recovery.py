@@ -735,7 +735,7 @@ def analyze_wire_formats(session, system_filter=None):
         recovered += 1
 
         # Also update the jam_types table if this opcode has a linked JAM type
-        jam_type = handler.get("jam_type")
+        jam_type = handler["jam_type"]
         if jam_type:
             db.upsert_jam_type(
                 name=jam_type,

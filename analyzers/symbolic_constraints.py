@@ -1495,7 +1495,7 @@ def propagate_constraints(session):
     for handler in handlers:
         ea = handler["handler_ea"]
         tc_name = handler["tc_name"] or f"handler_0x{ea:X}"
-        opcode = handler.get("wire_opcode") or handler.get("internal_index", 0)
+        opcode = handler["wire_opcode"] if handler["wire_opcode"] else handler["internal_index"]
 
         pseudocode = get_decompiled_text(ea)
         if not pseudocode:

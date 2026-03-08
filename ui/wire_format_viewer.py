@@ -66,7 +66,7 @@ class WireFormatViewer(ida_kernwin.Choose):
 
         # Parse fields from fields_json
         import json
-        fields_json = row.get("fields_json")
+        fields_json = row["fields_json"]
         if not fields_json:
             self._items.append([
                 "", "No fields extracted yet", "", "",

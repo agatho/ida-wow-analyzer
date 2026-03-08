@@ -287,8 +287,8 @@ def analyze_opcode_dispatcher(session):
     # Try to identify handler functions by looking for functions that
     # call known deserializer patterns (WriteUInt32, etc.)
     count = 0
-    dispatch_start = disp.get("start", 0x420000)
-    dispatch_count = disp.get("count", 891)
+    dispatch_start = int(disp.get("start", 0x420000))
+    dispatch_count = int(disp.get("count", 891))
 
     for i, callee_ea in enumerate(sorted(callees)):
         callee_name = ida_name.get_name(callee_ea)
@@ -337,6 +337,8 @@ def analyze_handler_jam_types(session):
     serializer_eas = set()
     for name, rva in cfg.serializer_rvas.items():
         if rva:
+            if isinstance(rva, str):
+                rva = int(rva, 16) if rva.startswith("0x") else int(rva)
             serializer_eas.add(cfg.rva_to_ea(rva))
 
     handlers = db.fetchall("SELECT * FROM opcodes WHERE handler_ea IS NOT NULL")
@@ -436,7 +438,7 @@ def analyze_handler_jam_types(session):
                 # Check if this function IS a handler (direct match)
                 if func_ea in handler_by_ea:
                     handler = handler_by_ea[func_ea]
-                    if not handler.get("jam_type") or handler["jam_type"] in ("", "none"):
+                    if not handler["jam_type"] or handler["jam_type"] in ("", "none"):
                         db.upsert_opcode(
                             direction=handler["direction"],
                             internal_index=handler["internal_index"],
@@ -450,7 +452,7 @@ def analyze_handler_jam_types(session):
             # Strategy 2b: Match JAM types to handlers by name containment
             # If opcode already has a jam_type field from import, ensure it's in jam_types table
             for handler in handlers:
-                existing_jam = handler.get("jam_type")
+                existing_jam = handler["jam_type"]
                 if existing_jam and existing_jam not in ("", "none"):
                     if existing_jam not in known_jam_types:
                         db.upsert_jam_type(name=existing_jam)

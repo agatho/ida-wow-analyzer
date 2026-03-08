@@ -821,9 +821,9 @@ def _build_opcode_lookup(db):
     for row in rows:
         direction = row["direction"]
         idx = row["internal_index"]
-        wire = row.get("wire_opcode")
-        tc_name = row.get("tc_name") or f"opcode_{idx}"
-        handler_ea = row.get("handler_ea")
+        wire = row["wire_opcode"]
+        tc_name = row["tc_name"] or f"opcode_{idx}"
+        handler_ea = row["handler_ea"]
 
         info = {
             "direction": direction,

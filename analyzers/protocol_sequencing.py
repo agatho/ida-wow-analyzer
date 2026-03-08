@@ -918,7 +918,7 @@ def recover_protocol_sequence(session, system_filter=None):
 
     for handler in handlers:
         ea = handler["handler_ea"]
-        tc_name = handler["tc_name"] or handler.get("jam_type") or f"handler_0x{ea:X}"
+        tc_name = handler["tc_name"] or handler["jam_type"] or f"handler_0x{ea:X}"
         direction = handler["direction"] or "CMSG"
         # Treat 'unknown' direction as CMSG for sequencing purposes
         if direction == "unknown":
