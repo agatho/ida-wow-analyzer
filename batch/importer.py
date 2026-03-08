@@ -327,7 +327,20 @@ def _import_opcodes(session, filepath):
                 handler_ea = cfg.rva_to_ea(handler_rva)
 
             jam_name = h.get("jam_name", "")
-            direction = h.get("direction", "CMSG")
+            direction = h.get("direction", "")
+
+            # Infer direction from JAM name patterns when not specified
+            if not direction or direction == "unknown":
+                if jam_name:
+                    jn = jam_name.lower()
+                    if "client" in jn or jn.startswith("cmsg") or "request" in jn:
+                        direction = "CMSG"
+                    elif "server" in jn or jn.startswith("smsg") or "response" in jn or "notify" in jn:
+                        direction = "SMSG"
+                    else:
+                        direction = "CMSG"  # default: most dispatch tables are client→server
+                else:
+                    direction = "CMSG"
 
             # Internal index: opcode value from dispatch table
             db.upsert_opcode(

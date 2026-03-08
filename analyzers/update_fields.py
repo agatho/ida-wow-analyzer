@@ -145,7 +145,7 @@ def _import_object_layouts_json(session, layout_file):
     count = 0
 
     for layout in layouts:
-        name = layout.get("name", layout.get("class_name", ""))
+        name = layout.get("name", layout.get("class_name", layout.get("class", "")))
         if not name:
             continue
 
