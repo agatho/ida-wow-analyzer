@@ -7,10 +7,64 @@ crash-safe decompilation with skip lists.
 import json
 import os
 import time
+import datetime
 
 import ida_kernwin
 import ida_auto
+import ida_loader
 import idaapi
+
+
+# ---------------------------------------------------------------------------
+# Central log file — written next to the IDB as tc_wow_analyzer.log
+# ---------------------------------------------------------------------------
+_log_file = None
+_log_path = None
+
+
+def _init_log_file():
+    """Open (or reopen) the log file next to the current IDB."""
+    global _log_file, _log_path
+    if _log_file is not None:
+        return _log_file
+    try:
+        idb_path = ida_loader.get_path(ida_loader.PATH_TYPE_IDB)
+        if not idb_path:
+            return None
+        _log_path = os.path.splitext(idb_path)[0] + ".tc_wow_analyzer.log"
+        _log_file = open(_log_path, "a", encoding="utf-8", buffering=1)
+        _log_file.write(f"\n{'=' * 72}\n")
+        _log_file.write(f"  TC WoW Analyzer session started "
+                        f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        _log_file.write(f"{'=' * 72}\n")
+    except Exception:
+        _log_file = None
+    return _log_file
+
+
+def _write_log(level, text):
+    """Append a timestamped line to the central log file."""
+    f = _init_log_file()
+    if f is None:
+        return
+    try:
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        f.write(f"{ts}  {level:5s}  {text}\n")
+    except Exception:
+        pass
+
+
+def close_log():
+    """Flush and close the log file (called on shutdown)."""
+    global _log_file
+    if _log_file is not None:
+        try:
+            _log_file.write(f"\n--- session ended "
+                            f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+            _log_file.close()
+        except Exception:
+            pass
+        _log_file = None
 
 
 def ea_str(ea):
@@ -429,24 +483,28 @@ def ask_yes_no(question, default=True):
 def msg(text):
     """Print a message to IDA output window with plugin prefix."""
     print(f"[TC-WoW] {text}")
+    _write_log("INFO", text)
     _post_activity(text, "info")
 
 
 def msg_info(text):
     """Print an info message."""
     print(f"[TC-WoW] INFO: {text}")
+    _write_log("INFO", text)
     _post_activity(text, "info")
 
 
 def msg_warn(text):
     """Print a warning."""
     print(f"[TC-WoW] WARNING: {text}")
+    _write_log("WARN", text)
     _post_activity(text, "warn")
 
 
 def msg_error(text):
     """Print an error."""
     print(f"[TC-WoW] ERROR: {text}")
+    _write_log("ERROR", text)
     _post_activity(text, "error")
 
 

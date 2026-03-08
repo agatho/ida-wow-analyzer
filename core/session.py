@@ -123,6 +123,10 @@ class PluginSession:
         self._initialized = False
         msg("Shutdown complete.")
 
+        # Close log file last (after final msg)
+        from tc_wow_analyzer.core.utils import close_log
+        close_log()
+
     def get_registered_actions(self):
         """Return list of registered action names for context menus."""
         return [name for name, _, _ in self._actions]
