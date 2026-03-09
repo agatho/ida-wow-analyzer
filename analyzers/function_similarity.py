@@ -47,8 +47,8 @@ SIZE_BUCKET_WIDTH = 64
 # Jaccard similarity threshold for near-match merging
 NEAR_MATCH_THRESHOLD = 0.85
 
-# Maximum number of functions to analyze (safety cap)
-MAX_FUNCTIONS_TO_ANALYZE = 12000
+# Maximum number of functions to analyze (0 = no cap, analyze all)
+MAX_FUNCTIONS_TO_ANALYZE = 0
 
 # Maximum number of constants to collect per function
 MAX_CONSTANTS_PER_FUNC = 128
@@ -552,17 +552,22 @@ def _collect_target_functions(session):
 
     msg_info(f"  System-labeled functions: {system_count}")
 
-    # 4. Named functions from IDA (non-sub_ names) if we still have room
-    if len(targets) < MAX_FUNCTIONS_TO_ANALYZE:
-        remaining = MAX_FUNCTIONS_TO_ANALYZE - len(targets)
+    # 4. Named functions from IDA (non-sub_ names)
+    # If MAX_FUNCTIONS_TO_ANALYZE is 0, collect all; otherwise cap at limit
+    cap = MAX_FUNCTIONS_TO_ANALYZE
+    collect_all = (cap == 0)
+    remaining = (cap - len(targets)) if cap else 0
+
+    if collect_all or len(targets) < cap:
         named_count = 0
         for seg_ea in idautils.Segments():
-            if named_count >= remaining:
+            if not collect_all and named_count >= remaining:
                 break
-            for func_ea in idautils.Functions(
-                    idaapi.getseg(seg_ea).start_ea,
-                    idaapi.getseg(seg_ea).end_ea):
-                if named_count >= remaining:
+            seg = idaapi.getseg(seg_ea)
+            if not seg:
+                continue
+            for func_ea in idautils.Functions(seg.start_ea, seg.end_ea):
+                if not collect_all and named_count >= remaining:
                     break
                 if func_ea in targets:
                     continue
