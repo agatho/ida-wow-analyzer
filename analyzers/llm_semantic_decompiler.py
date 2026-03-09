@@ -86,6 +86,29 @@ _MAX_CONTEXT_CHARS = 32_000
 # Default delay between LLM calls in batch mode (seconds).
 _DEFAULT_RATE_LIMIT_SECONDS = 1.0
 
+# ── Cancellation support ─────────────────────────────────────────────
+# A simple flag that batch loops check between iterations.  Can be set
+# from any thread (e.g. an IDA UI action) to gracefully stop processing.
+_cancel_requested = False
+
+
+def request_cancel():
+    """Signal the LLM batch loop to stop after the current handler."""
+    global _cancel_requested
+    _cancel_requested = True
+    msg_info("LLM cancellation requested — will stop after current handler.")
+
+
+def clear_cancel():
+    """Reset the cancellation flag (called at batch start)."""
+    global _cancel_requested
+    _cancel_requested = False
+
+
+def is_cancel_requested():
+    """Check if cancellation was requested."""
+    return _cancel_requested
+
 # Regex patterns for response parsing.
 _RE_CODE_BLOCK = re.compile(
     r'```(?:cpp|c\+\+|c)?\s*\n(.*?)```',
@@ -239,31 +262,57 @@ class LLMClient:
         env = dict(os.environ)
         env.pop("CLAUDECODE", None)
 
+        # On Windows, hide the console window so it doesn't steal focus
+        kwargs = {}
+        if os.name == "nt":
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0  # SW_HIDE
+            kwargs["startupinfo"] = si
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                input=full_prompt,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self.timeout,
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 env=env,
+                **kwargs,
             )
-        except subprocess.TimeoutExpired:
-            return None, f"Claude CLI timed out after {self.timeout}s"
+            # Store the active process so it can be killed on cancel
+            self._active_proc = proc
+            try:
+                stdout, stderr = proc.communicate(
+                    input=full_prompt, timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return None, f"Claude CLI timed out after {self.timeout}s"
+            finally:
+                self._active_proc = None
         except FileNotFoundError:
             return None, "Claude CLI binary not found"
         except Exception as exc:
             return None, f"Claude CLI error: {exc}"
 
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()[:500]
-            return None, f"Claude CLI exit code {result.returncode}: {stderr}"
+        if proc.returncode != 0:
+            err = (stderr or "").strip()[:500]
+            return None, f"Claude CLI exit code {proc.returncode}: {err}"
 
-        text = (result.stdout or "").strip()
+        text = (stdout or "").strip()
         if not text:
             return None, "Empty response from Claude CLI"
         return text, None
+
+    def kill_active(self):
+        """Kill any in-flight subprocess (called on cancel)."""
+        proc = getattr(self, "_active_proc", None)
+        if proc and proc.poll() is None:
+            proc.kill()
+            msg_warn("Killed active Claude CLI process.")
 
     def _chat_openai(self, system_prompt, user_prompt):
         """OpenAI-compatible chat completion."""
@@ -1044,11 +1093,15 @@ def semantically_decompile_all(session, force=False,
 
     msg_info(f"LLM Semantic Decompiler: {len(handlers)} {direction} handlers")
 
+    clear_cancel()  # reset from any previous run
+
     llm = LLMClient(session)
     msg_info(f"  LLM endpoint: {llm.provider_label()}")
     msg_info(f"  Rate limit: {rate_limit}s between calls")
     msg_info(f"  Force reprocess: {force}")
     msg_info(f"  Apply to IDB: {apply_to_idb_flag}")
+    msg_info(f"  Cancel: call request_cancel() or use Edit > Plugins > "
+             f"TC WoW > Cancel LLM")
 
     processed = 0
     skipped = 0
@@ -1057,6 +1110,13 @@ def semantically_decompile_all(session, force=False,
     total_consts = 0
 
     for i, row in enumerate(handlers):
+        # ── Check cancellation before each handler ──
+        if is_cancel_requested():
+            msg_info(f"  Cancelled after {processed} handlers "
+                     f"({errors} errors, {skipped} skipped).")
+            llm.kill_active()
+            break
+
         handler_ea = row["handler_ea"]
         tc_name = row["tc_name"] or f"handler_{row['internal_index']:X}"
 

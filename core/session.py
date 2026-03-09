@@ -173,6 +173,8 @@ class PluginSession:
              "Ctrl+Shift+L", self._action_llm_run),
             ("tc_wow:activity", "Activity Log",
              "Ctrl+Shift+G", self._action_activity_view),
+            ("tc_wow:llm_cancel", "Cancel LLM Processing",
+             "Ctrl+Shift+X", self._action_llm_cancel),
         ]
 
         for action_name, label, hotkey, handler in actions:
@@ -415,6 +417,15 @@ class PluginSession:
             msg_error(f"LLM run error: {e}")
             import traceback
             traceback.print_exc()
+
+
+    def _action_llm_cancel(self):
+        """Cancel any running LLM batch processing."""
+        try:
+            from tc_wow_analyzer.analyzers.llm_semantic_decompiler import request_cancel
+            request_cancel()
+        except Exception as e:
+            msg_error(f"Cancel error: {e}")
 
 
 class _ActionHandler(idaapi.action_handler_t):
