@@ -794,7 +794,11 @@ def _collect_string_refs_in_function(func_ea):
 def _get_string_at(ea):
     """Try to read a C string at address ea."""
     try:
-        stype = ida_bytes.get_str_type(ea)
+        try:
+            stype = ida_bytes.get_str_type(ea)
+        except AttributeError:
+            import ida_nalt
+            stype = ida_nalt.get_str_type(ea)
         if stype is not None and stype >= 0:
             s = ida_bytes.get_strlit_contents(ea, -1, stype)
             if s:

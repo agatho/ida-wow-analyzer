@@ -318,6 +318,8 @@ class PluginConfig:
 
     def rva_to_ea(self, rva):
         """Convert an RVA to an effective address using the current image base."""
+        if isinstance(rva, str):
+            rva = int(rva, 16) if rva.startswith("0x") else int(rva)
         return self.image_base + rva
 
     def ea_to_rva(self, ea):

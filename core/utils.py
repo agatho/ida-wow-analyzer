@@ -283,6 +283,17 @@ _MAX_FUNC_SIZE = 2_000_000  # bytes — skip functions larger than 2MB
 # of calling the decompiler.  Set by batch runner to prevent GUI crashes.
 _decompile_cache_only = False
 
+# Module-level DB reference set by PluginSession.initialize() so that
+# get_decompiled_text() can always use the cfunc_cache without requiring
+# every caller to pass db= explicitly.
+_default_db = None
+
+
+def set_default_db(db):
+    """Set the module-level DB used by get_decompiled_text() when no db is passed."""
+    global _default_db
+    _default_db = db
+
 
 def safe_decompile(ea):
     """Decompile a function with crash protection.
@@ -335,9 +346,12 @@ def get_decompiled_text(ea, db=None):
     """Decompile a function and return the pseudocode as text.
     Returns None on failure. Uses crash-safe decompilation.
 
-    If *db* is provided, checks the cfunc serialization cache first
-    (IDA 9.3+ only) to avoid redundant decompilation.
+    If *db* is provided (or the module-level _default_db is set),
+    checks the cfunc serialization cache first (IDA 9.3+ only) to
+    avoid redundant decompilation.
     """
+    if db is None:
+        db = _default_db
     # Try cache-only lookup first (no decompilation needed)
     if db is not None:
         try:

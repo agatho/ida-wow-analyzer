@@ -27,6 +27,13 @@ import ida_xref
 import idautils
 import idaapi
 
+# IDA 9.x moved get_str_type from ida_bytes to ida_nalt
+try:
+    _get_str_type = ida_bytes.get_str_type
+except AttributeError:
+    import ida_nalt
+    _get_str_type = ida_nalt.get_str_type
+
 from tc_wow_analyzer.core.utils import (
     msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text
 )
@@ -269,7 +276,7 @@ def _get_string_ref_hashes(func):
         for xref in idautils.XrefsFrom(head, 0):
             if xref.type in (ida_xref.dr_R, ida_xref.dr_O):
                 # Check if target is a string
-                str_type = ida_bytes.get_str_type(xref.to)
+                str_type = _get_str_type(xref.to)
                 if str_type is not None and str_type >= 0:
                     string_val = ida_bytes.get_strlit_contents(
                         xref.to, -1, str_type)

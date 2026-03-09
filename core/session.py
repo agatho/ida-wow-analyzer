@@ -53,6 +53,9 @@ class PluginSession:
         try:
             self.db = KnowledgeDB(db_path)
             self.db.open()
+            # Wire default DB for get_decompiled_text() cache lookups
+            from tc_wow_analyzer.core.utils import set_default_db
+            set_default_db(self.db)
         except Exception as e:
             msg_error(f"Failed to open knowledge DB: {e}")
             self._initialized = True
@@ -117,6 +120,8 @@ class PluginSession:
 
         # Close DB
         if self.db:
+            from tc_wow_analyzer.core.utils import set_default_db
+            set_default_db(None)
             self.db.close()
             self.db = None
 
