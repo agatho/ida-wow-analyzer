@@ -51,8 +51,15 @@ except ImportError:
 try:
     import ida_enum
     _HAS_ENUM = True
+    _ENUM_VIA_TYPEINF = False
 except ImportError:
+    # IDA 9.x removed ida_enum; enums are now in ida_typeinf
     _HAS_ENUM = False
+    try:
+        import ida_typeinf
+        _ENUM_VIA_TYPEINF = True
+    except ImportError:
+        _ENUM_VIA_TYPEINF = False
 
 from tc_wow_analyzer.core.utils import (
     msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text
@@ -655,17 +662,34 @@ def _annotate_wire_format_fields(db, modified_eas):
 
 
 def _create_ida_enums(db):
-    """Create IDA enum types from recovered enum definitions."""
-    if not _HAS_ENUM:
-        msg_warn("ida_enum not available — skipping enum creation")
+    """Create IDA enum types from recovered enum definitions.
+
+    Supports both IDA 8.x (ida_enum module) and IDA 9.x (ida_typeinf).
+    """
+    if _HAS_ENUM:
+        return _create_ida_enums_legacy(db)
+    elif _ENUM_VIA_TYPEINF:
+        return _create_ida_enums_typeinf(db)
+    else:
+        msg_warn("Neither ida_enum nor ida_typeinf available — skipping enum creation")
         return 0
 
+
+def _get_enum_defs(db):
+    """Load recovered enum definitions from the knowledge DB."""
     recovered = db.kv_get("recovered_enums")
     if not recovered or not isinstance(recovered, list):
+        return []
+    return recovered
+
+
+def _create_ida_enums_legacy(db):
+    """Create enums using the IDA 8.x ida_enum API."""
+    recovered = _get_enum_defs(db)
+    if not recovered:
         return 0
 
     count = 0
-
     for enum_def in recovered:
         if not isinstance(enum_def, dict):
             continue
@@ -674,7 +698,6 @@ def _create_ida_enums(db):
         if not enum_name:
             continue
 
-        # Sanitize the name for IDA
         safe_name = re.sub(r'[^A-Za-z0-9_]', '_', enum_name)
         if not safe_name or safe_name[0].isdigit():
             safe_name = "E_" + safe_name
@@ -685,17 +708,13 @@ def _create_ida_enums(db):
 
         is_flags = enum_def.get("is_flags", False)
 
-        # Check if enum already exists
         existing_id = ida_enum.get_enum(safe_name)
         if existing_id != idaapi.BADADDR:
-            # Enum already exists — skip creation but count existing members
-            # to decide if we need to add more
             existing_count = ida_enum.get_enum_size(existing_id)
             if existing_count >= len(values):
                 continue
             enum_id = existing_id
         else:
-            # Create new enum
             enum_id = ida_enum.add_enum(idaapi.BADADDR, safe_name, 0)
             if enum_id == idaapi.BADADDR:
                 msg_warn(f"Failed to create enum: {safe_name}")
@@ -708,24 +727,16 @@ def _create_ida_enums(db):
         for val_entry in values:
             if not isinstance(val_entry, dict):
                 continue
-
             val = val_entry.get("value")
             if val is None:
                 continue
-
             vname = val_entry.get("name")
             if not vname:
                 vname = f"VALUE_{val}" if val < 256 else f"VALUE_0x{val:X}"
-
-            # Build full member name: EnumName_MemberName
             member_name = f"{safe_name}_{vname}"
             member_name = re.sub(r'[^A-Za-z0-9_]', '_', member_name)
-
-            # Check if member already exists
             if ida_enum.get_enum_member_by_name(member_name) != idaapi.BADADDR:
                 continue
-
-            # Add the member
             bmask = idaapi.BADADDR if is_flags else 0
             err = ida_enum.add_enum_member(enum_id, member_name, val, bmask)
             if err == 0:
@@ -733,6 +744,83 @@ def _create_ida_enums(db):
 
         if members_added > 0:
             count += 1
+
+    return count
+
+
+def _create_ida_enums_typeinf(db):
+    """Create enums using the IDA 9.x ida_typeinf API.
+
+    In IDA 9, enums are type info objects created via enum_type_data_t
+    and set_numbered_type / set_named_type in the local type library.
+    """
+    recovered = _get_enum_defs(db)
+    if not recovered:
+        return 0
+
+    til = ida_typeinf.get_idati()
+    count = 0
+
+    for enum_def in recovered:
+        if not isinstance(enum_def, dict):
+            continue
+
+        enum_name = enum_def.get("suggested_name")
+        if not enum_name:
+            continue
+
+        safe_name = re.sub(r'[^A-Za-z0-9_]', '_', enum_name)
+        if not safe_name or safe_name[0].isdigit():
+            safe_name = "E_" + safe_name
+
+        values = enum_def.get("values")
+        if not values or not isinstance(values, list):
+            continue
+
+        is_flags = enum_def.get("is_flags", False)
+
+        # Check if already exists in the type library
+        existing = ida_typeinf.tinfo_t()
+        if existing.get_named_type(til, safe_name):
+            continue
+
+        # Build enum_type_data_t
+        etd = ida_typeinf.enum_type_data_t()
+        if is_flags:
+            etd.bte |= ida_typeinf.BTE_BITFIELD
+
+        members_added = 0
+        for val_entry in values:
+            if not isinstance(val_entry, dict):
+                continue
+            val = val_entry.get("value")
+            if val is None:
+                continue
+            vname = val_entry.get("name")
+            if not vname:
+                vname = f"VALUE_{val}" if val < 256 else f"VALUE_0x{val:X}"
+            member_name = f"{safe_name}_{vname}"
+            member_name = re.sub(r'[^A-Za-z0-9_]', '_', member_name)
+
+            em = ida_typeinf.enum_member_t()
+            em.name = member_name
+            em.value = val
+            etd.push_back(em)
+            members_added += 1
+
+        if members_added == 0:
+            continue
+
+        # Create tinfo_t from the enum data and register it
+        tif = ida_typeinf.tinfo_t()
+        if tif.create_enum(etd):
+            rc = tif.set_named_type(til, safe_name, ida_typeinf.NTF_REPLACE)
+            if rc == 0 or rc == ida_typeinf.TERR_OK:
+                count += 1
+            else:
+                msg_warn(f"Failed to register enum type: {safe_name} (rc={rc})")
+        else:
+            msg_warn(f"Failed to create enum tinfo: {safe_name}")
 
     return count
 
