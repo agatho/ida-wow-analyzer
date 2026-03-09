@@ -787,7 +787,16 @@ def _create_ida_enums_typeinf(db):
         # Build enum_type_data_t
         etd = ida_typeinf.enum_type_data_t()
         if is_flags:
-            etd.bte |= ida_typeinf.BTE_BITFIELD
+            # BTE_BITFIELD was removed in IDA 9.x
+            bte_bitfield = getattr(ida_typeinf, 'BTE_BITFIELD', None)
+            if bte_bitfield is not None:
+                etd.bte |= bte_bitfield
+            else:
+                # IDA 9.x: set hex representation for flag-style enums
+                try:
+                    etd.bte |= getattr(ida_typeinf, 'BTE_HEX', 0)
+                except AttributeError:
+                    pass
 
         members_added = 0
         for val_entry in values:

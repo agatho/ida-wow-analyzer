@@ -1126,8 +1126,16 @@ def _build_offset_map(session):
     offset_map = {}
 
     # 1. From recovered object layouts
-    layouts = db.kv_get("object_layouts") or {}
-    for class_name, layout in layouts.items():
+    raw_layouts = db.kv_get("object_layouts") or {}
+    # Normalize: kv_store may hold a list (sorted by field_count) or a dict
+    if isinstance(raw_layouts, list):
+        layouts_iter = (
+            (l.get("class_name", l.get("name", f"class_{i}")), l)
+            for i, l in enumerate(raw_layouts) if isinstance(l, dict)
+        )
+    else:
+        layouts_iter = raw_layouts.items()
+    for class_name, layout in layouts_iter:
         if isinstance(layout, dict) and "members" in layout:
             for member in layout["members"]:
                 offset = member.get("offset")

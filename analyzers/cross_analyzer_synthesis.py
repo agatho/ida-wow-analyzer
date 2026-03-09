@@ -980,7 +980,13 @@ def _index_callee_contracts(callee_data):
     if not callee_data:
         return index
 
-    contracts = callee_data.get("contracts", [])
+    # callee_contracts kv_store may be a list (flat) or dict with "contracts" key
+    if isinstance(callee_data, list):
+        contracts = callee_data
+    elif isinstance(callee_data, dict):
+        contracts = callee_data.get("contracts", [])
+    else:
+        contracts = []
     if isinstance(contracts, list):
         for contract in contracts:
             if not isinstance(contract, dict):
