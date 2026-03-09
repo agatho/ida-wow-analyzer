@@ -131,11 +131,14 @@ class LLMClient:
         subprocess in print mode (``-p``).  Uses your existing Claude Code
         subscription — **no API key needed**.
       - ``"anthropic"``: Direct Anthropic Messages API (needs ``api_key``).
-      - ``"openai"``: OpenAI-compatible endpoint (local LLMs, OpenAI, etc.).
+      - ``"openai"``: Any OpenAI-compatible endpoint.
+      - ``"lmstudio"``: LM Studio (localhost:1234).
+      - ``"ollama"``: Ollama (localhost:11434).
 
     Auto-detection when ``provider`` is unset:
-      - URL contains ``anthropic.com`` or model starts with ``claude-``
-        → anthropic
+      - URL contains ``anthropic.com`` → anthropic
+      - URL contains ``11434`` → ollama
+      - URL contains ``127.0.0.1`` or ``localhost`` → openai (LM Studio default)
       - Otherwise → claude-cli
 
     Config examples::
@@ -147,10 +150,16 @@ class LLMClient:
         "llm": {"provider": "anthropic", "api_key": "sk-ant-...",
                 "model": "claude-sonnet-4-20250514"}
 
-        # Local LLM (LM Studio, Ollama, etc.)
+        # LM Studio
+        "llm": {"provider": "lmstudio", "model": "deepseek-coder-v2"}
+
+        # Ollama
+        "llm": {"provider": "ollama", "model": "llama3"}
+
+        # Custom OpenAI-compatible endpoint
         "llm": {"provider": "openai",
-                "url": "http://127.0.0.1:1234/v1/chat/completions",
-                "model": "local-model"}
+                "url": "http://my-server:8080/v1/chat/completions",
+                "model": "my-model"}
     """
 
     def __init__(self, session):
@@ -162,27 +171,34 @@ class LLMClient:
         self.max_tokens = int(llm_cfg.get("max_tokens", 8192))
         self.temperature = float(llm_cfg.get("temperature", 0.2))
 
-        # Auto-detect provider
-        provider = llm_cfg.get("provider", "").lower()
-        if provider in ("claude-cli", "claude_cli", "cli"):
-            self._provider = "claude-cli"
-        elif provider in ("anthropic",):
-            self._provider = "anthropic"
-        elif provider in ("openai", "local"):
-            self._provider = "openai"
+        # Provider aliases → canonical name + default URL
+        _PROVIDER_MAP = {
+            "claude-cli":  ("claude-cli", ""),
+            "claude_cli":  ("claude-cli", ""),
+            "cli":         ("claude-cli", ""),
+            "anthropic":   ("anthropic",  "https://api.anthropic.com/v1/messages"),
+            "claude":      ("anthropic",  "https://api.anthropic.com/v1/messages"),
+            "openai":      ("openai",     "http://127.0.0.1:1234/v1/chat/completions"),
+            "local":       ("openai",     "http://127.0.0.1:1234/v1/chat/completions"),
+            "lmstudio":    ("openai",     "http://127.0.0.1:1234/v1/chat/completions"),
+            "lm-studio":   ("openai",     "http://127.0.0.1:1234/v1/chat/completions"),
+            "lm_studio":   ("openai",     "http://127.0.0.1:1234/v1/chat/completions"),
+            "ollama":      ("openai",     "http://127.0.0.1:11434/v1/chat/completions"),
+        }
+
+        provider = llm_cfg.get("provider", "").lower().strip()
+        if provider in _PROVIDER_MAP:
+            self._provider, default_url = _PROVIDER_MAP[provider]
+            if not self.url:
+                self.url = default_url
         elif "anthropic.com" in self.url:
             self._provider = "anthropic"
+        elif "11434" in self.url:
+            self._provider = "openai"  # ollama
         elif self.url and ("127.0.0.1" in self.url or "localhost" in self.url):
             self._provider = "openai"
         else:
-            # Default to claude-cli (subscription, no API key needed)
             self._provider = "claude-cli"
-
-        # Fix up URLs for API providers
-        if self._provider == "anthropic" and not self.url:
-            self.url = "https://api.anthropic.com/v1/messages"
-        elif self._provider == "openai" and not self.url:
-            self.url = "http://127.0.0.1:1234/v1/chat/completions"
 
     # ------------------------------------------------------------------
 

@@ -31,6 +31,11 @@ TC WoW Analyzer — Settings
 <##Build Configuration##Build number\::{iBuildNumber}>
 <Image base (hex, 0x...)\::{iImageBase}>
 
+<##LLM Configuration##Provider (claude-cli, anthropic, lmstudio, ollama, openai)\::{iLlmProvider}>
+<Model name\::{iLlmModel}>
+<API key (anthropic only, leave empty for claude-cli)\::{iLlmApiKey}>
+<Endpoint URL (auto-filled for known providers)\::{iLlmUrl}>
+
 <##Options##Auto-run analysis on plugin load\::{cAutoRun}>
 <Install Hex-Rays annotations\::{cHexRays}>
 <Register MCP tools\::{cMCP}>{cOptions}>
@@ -48,6 +53,12 @@ TC WoW Analyzer — Settings
         pipeline_dir = cfg.get("pipeline_dir") or ""
         build_number = str(cfg.build_number) if cfg.build_number else ""
         image_base = f"0x{cfg.image_base:X}" if cfg.image_base else ""
+
+        llm_cfg = cfg.get("llm") or {}
+        llm_provider = llm_cfg.get("provider", "claude-cli") if isinstance(llm_cfg, dict) else "claude-cli"
+        llm_model = llm_cfg.get("model", "sonnet") if isinstance(llm_cfg, dict) else "sonnet"
+        llm_api_key = llm_cfg.get("api_key", "") if isinstance(llm_cfg, dict) else ""
+        llm_url = llm_cfg.get("url", "") if isinstance(llm_cfg, dict) else ""
 
         auto_run = cfg.get("auto_run_analysis", default=False)
         hexrays = cfg.get("enable_hexrays_annotations", default=True)
@@ -82,6 +93,22 @@ TC WoW Analyzer — Settings
             "iImageBase": ida_kernwin.Form.StringInput(
                 value=image_base,
                 swidth=20,
+            ),
+            "iLlmProvider": ida_kernwin.Form.StringInput(
+                value=llm_provider,
+                swidth=30,
+            ),
+            "iLlmModel": ida_kernwin.Form.StringInput(
+                value=llm_model,
+                swidth=40,
+            ),
+            "iLlmApiKey": ida_kernwin.Form.StringInput(
+                value=llm_api_key,
+                swidth=60,
+            ),
+            "iLlmUrl": ida_kernwin.Form.StringInput(
+                value=llm_url,
+                swidth=60,
             ),
             "cOptions": ida_kernwin.Form.ChkGroupControl((
                 "cAutoRun", "cHexRays", "cMCP",
@@ -131,6 +158,28 @@ TC WoW Analyzer — Settings
             if build_info:
                 for k, v in build_info.items():
                     cfg.set("builds", build_number, k, v)
+
+        # LLM config
+        llm_provider = self.iLlmProvider.value.strip()
+        llm_model = self.iLlmModel.value.strip()
+        llm_api_key = self.iLlmApiKey.value.strip()
+        llm_url = self.iLlmUrl.value.strip()
+        llm_section = cfg.get("llm") or {}
+        if not isinstance(llm_section, dict):
+            llm_section = {}
+        if llm_provider:
+            llm_section["provider"] = llm_provider
+        if llm_model:
+            llm_section["model"] = llm_model
+        if llm_api_key:
+            llm_section["api_key"] = llm_api_key
+        else:
+            llm_section.pop("api_key", None)
+        if llm_url:
+            llm_section["url"] = llm_url
+        else:
+            llm_section.pop("url", None)
+        cfg.set("llm", llm_section)
 
         # Options
         opts = self.cOptions.value
