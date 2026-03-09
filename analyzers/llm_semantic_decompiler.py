@@ -121,21 +121,68 @@ _RE_COMMENT_LINE = re.compile(
 # ===================================================================
 
 class LLMClient:
-    """Minimal OpenAI-compatible chat-completion client.
+    """Chat-completion client supporting Claude CLI, Anthropic API, and
+    OpenAI-compatible endpoints.
 
-    Reads endpoint URL and model name from session.cfg (the ``llm``
-    config section).  Falls back to ``http://127.0.0.1:1234/v1/chat/
-    completions`` with model ``local-model`` when the config is absent.
+    Reads config from session.cfg ``llm`` section.
+
+    Provider selection (``provider`` key):
+      - ``"claude-cli"`` (default): Invokes the ``claude`` CLI binary via
+        subprocess in print mode (``-p``).  Uses your existing Claude Code
+        subscription — **no API key needed**.
+      - ``"anthropic"``: Direct Anthropic Messages API (needs ``api_key``).
+      - ``"openai"``: OpenAI-compatible endpoint (local LLMs, OpenAI, etc.).
+
+    Auto-detection when ``provider`` is unset:
+      - URL contains ``anthropic.com`` or model starts with ``claude-``
+        → anthropic
+      - Otherwise → claude-cli
+
+    Config examples::
+
+        # Claude CLI (subscription, no API key needed)
+        "llm": {"provider": "claude-cli", "model": "sonnet"}
+
+        # Anthropic API (needs API key)
+        "llm": {"provider": "anthropic", "api_key": "sk-ant-...",
+                "model": "claude-sonnet-4-20250514"}
+
+        # Local LLM (LM Studio, Ollama, etc.)
+        "llm": {"provider": "openai",
+                "url": "http://127.0.0.1:1234/v1/chat/completions",
+                "model": "local-model"}
     """
 
     def __init__(self, session):
         llm_cfg = session.cfg.get("llm") or {}
-        self.url = llm_cfg.get("url", "http://127.0.0.1:1234/v1/chat/completions")
-        self.model = llm_cfg.get("model", "local-model")
+        self.url = llm_cfg.get("url", "")
+        self.model = llm_cfg.get("model", "sonnet")
         self.api_key = llm_cfg.get("api_key", "")
-        self.timeout = int(llm_cfg.get("timeout", 120))
+        self.timeout = int(llm_cfg.get("timeout", 180))
         self.max_tokens = int(llm_cfg.get("max_tokens", 8192))
         self.temperature = float(llm_cfg.get("temperature", 0.2))
+
+        # Auto-detect provider
+        provider = llm_cfg.get("provider", "").lower()
+        if provider in ("claude-cli", "claude_cli", "cli"):
+            self._provider = "claude-cli"
+        elif provider in ("anthropic",):
+            self._provider = "anthropic"
+        elif provider in ("openai", "local"):
+            self._provider = "openai"
+        elif "anthropic.com" in self.url:
+            self._provider = "anthropic"
+        elif self.url and ("127.0.0.1" in self.url or "localhost" in self.url):
+            self._provider = "openai"
+        else:
+            # Default to claude-cli (subscription, no API key needed)
+            self._provider = "claude-cli"
+
+        # Fix up URLs for API providers
+        if self._provider == "anthropic" and not self.url:
+            self.url = "https://api.anthropic.com/v1/messages"
+        elif self._provider == "openai" and not self.url:
+            self.url = "http://127.0.0.1:1234/v1/chat/completions"
 
     # ------------------------------------------------------------------
 
@@ -145,6 +192,65 @@ class LLMClient:
         Returns (response_text, error_string).  On success error_string
         is None; on failure response_text is None.
         """
+        if self._provider == "claude-cli":
+            return self._chat_claude_cli(system_prompt, user_prompt)
+        if self._provider == "anthropic":
+            return self._chat_anthropic(system_prompt, user_prompt)
+        return self._chat_openai(system_prompt, user_prompt)
+
+    def _chat_claude_cli(self, system_prompt, user_prompt):
+        """Invoke claude CLI in print mode via subprocess."""
+        import subprocess
+        import shutil
+
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            return None, ("'claude' CLI not found in PATH. "
+                          "Install Claude Code or set provider to 'anthropic'/'openai'.")
+
+        # Build the combined prompt (system + user)
+        full_prompt = f"{system_prompt}\n\n---\n\n{user_prompt}"
+
+        cmd = [
+            claude_bin, "-p",
+            "--model", self.model,
+            "--allowedTools", "",       # no tools, pure text completion
+            "--max-turns", "1",         # single turn, no back-and-forth
+        ]
+
+        # Unset CLAUDECODE env var to allow nested invocation (IDA may be
+        # running inside a Claude Code session)
+        env = dict(os.environ)
+        env.pop("CLAUDECODE", None)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                input=full_prompt,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return None, f"Claude CLI timed out after {self.timeout}s"
+        except FileNotFoundError:
+            return None, "Claude CLI binary not found"
+        except Exception as exc:
+            return None, f"Claude CLI error: {exc}"
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()[:500]
+            return None, f"Claude CLI exit code {result.returncode}: {stderr}"
+
+        text = (result.stdout or "").strip()
+        if not text:
+            return None, "Empty response from Claude CLI"
+        return text, None
+
+    def _chat_openai(self, system_prompt, user_prompt):
+        """OpenAI-compatible chat completion."""
         payload = {
             "model": self.model,
             "messages": [
@@ -159,6 +265,62 @@ class LLMClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
+        data, error = self._http_post(payload, headers)
+        if error:
+            return None, error
+
+        try:
+            choices = data.get("choices", [])
+            if not choices:
+                return None, "Empty choices in LLM response"
+            text = choices[0].get("message", {}).get("content", "")
+            if not text:
+                return None, "Empty content in LLM response"
+            return text, None
+        except Exception as exc:
+            return None, f"Response parse error: {exc}"
+
+    def _chat_anthropic(self, system_prompt, user_prompt):
+        """Anthropic Messages API chat completion."""
+        payload = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "system": system_prompt,
+            "messages": [
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+        }
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+
+        data, error = self._http_post(payload, headers)
+        if error:
+            return None, error
+
+        try:
+            content = data.get("content", [])
+            if not content:
+                return None, "Empty content in Anthropic response"
+            text_parts = [
+                block.get("text", "")
+                for block in content
+                if block.get("type") == "text"
+            ]
+            text = "\n".join(text_parts)
+            if not text:
+                return None, "No text blocks in Anthropic response"
+            return text, None
+        except Exception as exc:
+            return None, f"Response parse error: {exc}"
+
+    def _http_post(self, payload, headers):
+        """Send HTTP POST and return (parsed_json, error_string)."""
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             self.url, data=body, headers=headers, method="POST"
@@ -167,6 +329,7 @@ class LLMClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+            return data, None
         except urllib.error.HTTPError as exc:
             err_body = ""
             try:
@@ -179,21 +342,11 @@ class LLMClient:
         except Exception as exc:
             return None, f"Request error: {exc}"
 
-        # Parse response
-        try:
-            choices = data.get("choices", [])
-            if not choices:
-                return None, "Empty choices in LLM response"
-            text = choices[0].get("message", {}).get("content", "")
-            if not text:
-                return None, "Empty content in LLM response"
-            return text, None
-        except Exception as exc:
-            return None, f"Response parse error: {exc}"
-
     def provider_label(self):
         """Human-readable label for logging."""
-        return f"{self.url} / {self.model}"
+        if self._provider == "claude-cli":
+            return f"claude-cli / {self.model}"
+        return f"{self._provider}: {self.url} / {self.model}"
 
 
 # ===================================================================

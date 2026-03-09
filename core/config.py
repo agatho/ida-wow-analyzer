@@ -66,8 +66,10 @@ _DEFAULTS = {
     "serializer_rvas": {},
 
     "llm": {
-        "url": "http://127.0.0.1:1234/v1/chat/completions",
-        "model": "local-model",
+        "provider": "claude-cli",
+        "model": "sonnet",
+        "max_tokens": 8192,
+        "timeout": 180,
     },
 
     "mcp": {
