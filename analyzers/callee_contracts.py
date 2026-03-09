@@ -407,8 +407,8 @@ def _find_shared_utilities(session, min_callers, system_filter=None):
             "ea": callee_ea,
             "name": callee_name,
             "caller_count": len(caller_set),
-            "callers": caller_names[:50],  # cap for storage
-            "caller_eas": caller_eas[:50],
+            "callers": caller_names[:500],
+            "caller_eas": caller_eas[:500],
             "is_virtual": is_virtual,
         })
 
@@ -441,7 +441,7 @@ def _analyze_function_contract(ea, func_name, caller_eas):
     transitive_calls = _extract_transitive_calls(pseudocode)
 
     # --- Analyze call sites (sample up to 20 callers) ---
-    sample_eas = caller_eas[:20]
+    sample_eas = caller_eas[:100]
     caller_pseudocodes = []
     for caller_ea in sample_eas:
         caller_pc = get_decompiled_text(caller_ea)
@@ -458,7 +458,7 @@ def _analyze_function_contract(ea, func_name, caller_eas):
     for param in params:
         idx = param["index"]
         if idx in observed_args and observed_args[idx]:
-            param["observed_values"] = sorted(set(observed_args[idx]))[:20]
+            param["observed_values"] = sorted(set(observed_args[idx]))[:200]
             if all(isinstance(v, (int, float)) for v in param["observed_values"]):
                 lo = min(param["observed_values"])
                 hi = max(param["observed_values"])
@@ -490,7 +490,7 @@ def _analyze_function_contract(ea, func_name, caller_eas):
         "postconditions": postconditions,
         "side_effects": side_effects,
         "error_conditions": error_conditions,
-        "transitive_calls": transitive_calls[:15],
+        "transitive_calls": transitive_calls[:100],
         "is_pure": is_pure,
         "is_virtual": False,  # will be overridden by caller if known
     }
@@ -657,7 +657,7 @@ def _extract_return_values(pseudocode):
     return {
         "type": ret_type,
         "semantics": semantics,
-        "possible_values": return_values[:20],
+        "possible_values": return_values[:200],
         "has_void_return": has_void_return,
         "callers_check": False,  # will be enriched later
     }

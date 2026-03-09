@@ -133,7 +133,7 @@ _MIN_VTABLE_ENTRIES = 2
 _PROGRESS_INTERVAL = 500
 
 # Maximum number of xrefs to follow per allocator function
-_MAX_XREFS_PER_ALLOC = 50000
+_MAX_XREFS_PER_ALLOC = 500000
 
 # Maximum pseudocode lines to scan per function
 _MAX_PSEUDOCODE_LINES = 5000

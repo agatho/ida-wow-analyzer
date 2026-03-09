@@ -39,10 +39,10 @@ from tc_wow_analyzer.core.utils import (
 #  Constants & limits
 # ===================================================================
 
-MAX_PATHS_PER_HANDLER = 64
-MAX_NESTING_DEPTH = 20
+MAX_PATHS_PER_HANDLER = 512
+MAX_NESTING_DEPTH = 30
 MAX_LOOP_UNROLL = 1          # execute loop body once symbolically
-MAX_STMT_COUNT = 4000        # safety limit for very large handlers
+MAX_STMT_COUNT = 20000       # safety limit for very large handlers
 _COMPLEXITY_PATH_WEIGHT = 1.0
 _COMPLEXITY_DEPTH_WEIGHT = 0.6
 _COMPLEXITY_EFFECT_WEIGHT = 0.4

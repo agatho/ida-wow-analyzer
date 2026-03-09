@@ -67,7 +67,7 @@ _THIS_REGS = {"rcx", "ecx"}
 _MAX_FUNCTIONS = 200000
 
 # Maximum indirect calls to attempt decompiler resolution on
-_MAX_DECOMPILE = 5000
+_MAX_DECOMPILE = 25000
 
 # Maximum targets before we give up on a single call site
 _MAX_TARGETS_PER_SITE = 500

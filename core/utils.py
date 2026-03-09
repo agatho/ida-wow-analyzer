@@ -277,7 +277,7 @@ def get_skiplist_count():
     return len(_decompile_skiplist)
 
 
-_MAX_FUNC_SIZE = 200_000  # bytes — skip functions larger than this
+_MAX_FUNC_SIZE = 2_000_000  # bytes — skip functions larger than 2MB
 
 # When True, safe_decompile returns None for uncached functions instead
 # of calling the decompiler.  Set by batch runner to prevent GUI crashes.

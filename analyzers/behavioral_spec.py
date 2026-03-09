@@ -134,8 +134,8 @@ _CONDITION_CLASSIFIERS = [
     ("equality_check",   re.compile(r'\w+\s*[!=]=\s*\w+')),
 ]
 
-MAX_NESTING_DEPTH = 15
-MAX_PATHS_PER_HANDLER = 256
+MAX_NESTING_DEPTH = 30
+MAX_PATHS_PER_HANDLER = 1024
 
 
 # ===================================================================

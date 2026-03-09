@@ -44,8 +44,8 @@ NGRAM_SIZES = (4, 6, 8)
 # Minimum instruction count for a function to be analyzed
 MIN_INSTRUCTION_COUNT = 20
 
-# Maximum number of functions to analyze
-MAX_FUNCTIONS = 10000
+# Maximum number of functions to analyze (0 = no cap)
+MAX_FUNCTIONS = 0
 
 # Minimum frequency for a pattern to be considered "common"
 MIN_COMMON_FREQUENCY = 10
@@ -410,7 +410,7 @@ def _collect_target_functions(session):
     system_count = 0
     for row in system_funcs:
         ea = row["ea"]
-        if ea not in targets and len(targets) < MAX_FUNCTIONS:
+        if ea not in targets and (MAX_FUNCTIONS == 0 or len(targets) < MAX_FUNCTIONS):
             func = ida_funcs.get_func(ea)
             if func and _count_instructions(func) >= MIN_INSTRUCTION_COUNT:
                 targets[ea] = row["name"]
@@ -419,17 +419,18 @@ def _collect_target_functions(session):
     msg_info(f"  System-labeled functions: {system_count}")
 
     # 3. Named functions from IDA (non-sub_, non-j_ prefixes)
-    if len(targets) < MAX_FUNCTIONS:
-        remaining = MAX_FUNCTIONS - len(targets)
+    collect_all = (MAX_FUNCTIONS == 0)
+    if collect_all or len(targets) < MAX_FUNCTIONS:
+        remaining = (MAX_FUNCTIONS - len(targets)) if not collect_all else 0
         named_count = 0
         for seg_ea in idautils.Segments():
-            if named_count >= remaining:
+            if not collect_all and named_count >= remaining:
                 break
             seg = idaapi.getseg(seg_ea)
             if not seg:
                 continue
             for func_ea in idautils.Functions(seg.start_ea, seg.end_ea):
-                if named_count >= remaining:
+                if not collect_all and named_count >= remaining:
                     break
                 if func_ea in targets:
                     continue

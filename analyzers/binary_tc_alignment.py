@@ -293,7 +293,7 @@ def align_binary_to_tc(session):
         "aggregate": aggregate,
         "missing_in_tc": missing_in_tc,
         "extra_in_tc": extra_in_tc,
-        "match_failures": match_failures[:100],  # cap for storage
+        "match_failures": match_failures[:500],
         "analysis_time_seconds": round(elapsed, 1),
         "timestamp": time.time(),
     }
@@ -1280,7 +1280,7 @@ def _extract_missing_in_tc(alignments):
             "handler": a["tc_handler"],
             "opcode": a["opcode"],
             "binary_ea": a["binary_ea"],
-            "binary_blocks": binary_blocks[:20],  # cap to avoid huge results
+            "binary_blocks": binary_blocks[:200],
             "severity": worst_severity,
             "tc_file": a["tc_file"],
             "tc_line_start": a["tc_line_start"],
@@ -1316,7 +1316,7 @@ def _extract_extra_in_tc(alignments):
         extra.append({
             "handler": a["tc_handler"],
             "opcode": a["opcode"],
-            "tc_blocks": tc_blocks[:20],
+            "tc_blocks": tc_blocks[:200],
             "tc_file": a["tc_file"],
         })
 
@@ -1338,7 +1338,7 @@ def _serialize_alignments(alignments):
             "alignment_score": a["alignment_score"],
             "matching_blocks": a["matching_blocks"],
             "differing_blocks": a["differing_blocks"],
-            "differences": a["differences"][:50],  # cap per handler
+            "differences": a["differences"][:500],
             "tc_file": a["tc_file"],
             "tc_line_start": a["tc_line_start"],
             "tc_line_end": a["tc_line_end"],
@@ -1400,7 +1400,7 @@ def _print_summary(aggregate, alignments):
         msg("")
 
     # Top 20 most divergent handlers
-    worst = sorted(alignments, key=lambda a: a["alignment_score"])[:20]
+    worst = sorted(alignments, key=lambda a: a["alignment_score"])[:200]
     if worst:
         msg("  20 Most Divergent Handlers:")
         msg("  " + "-" * 60)
