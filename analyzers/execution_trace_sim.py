@@ -2075,6 +2075,18 @@ def simulate_execution(session):
         # Store per-handler trace
         db.kv_set(f"execution_trace:{tc_name}", trace)
 
+        # Backward-compat shim for the retired Behavioral Spec analyzer:
+        # Cross-Analyzer Synthesis and Handler Scaffolding both consume
+        # `behavioral_spec:<name>` keys. Mirror the trace into that namespace
+        # using the BS-expected shape so consumers keep working.
+        db.kv_set(f"behavioral_spec:{tc_name}", {
+            "handler": tc_name,
+            "handler_ea": f"0x{ea:X}",
+            "path_count": len(paths),
+            "paths": paths,
+            "generated_at": time.time(),
+        })
+
         # Generate test cases
         for path in paths:
             test_code = _generate_test_case(tc_name, ea, path)
@@ -2119,6 +2131,15 @@ def simulate_execution(session):
     }
 
     db.kv_set("execution_traces", summary)
+    # Backward-compat shim: Behavioral Spec was merged into ETS — write the
+    # `behavioral_specs` summary key in the BS-expected shape so consumers
+    # (Cross-Analyzer Synthesis, Handler Scaffolding) keep working.
+    db.kv_set("behavioral_specs", {
+        "handler_count": simulated_count,
+        "total_paths": total_paths,
+        "avg_paths_per_handler": avg_paths,
+        "generated_at": time.time(),
+    })
     db.commit()
 
     elapsed = time.time() - t0

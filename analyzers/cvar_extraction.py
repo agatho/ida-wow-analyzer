@@ -649,7 +649,17 @@ def _analyze_registration_sites(session, candidates, register_funcs, bulk_funcs)
     total_funcs = len(func_to_names)
     msg_info(f"  Will analyze {total_funcs} functions...")
 
+    # Resume from checkpoint if a prior idat-crash killed mid-loop
+    checkpoint = session.db.kv_get("cvars_phase3_checkpoint") or {}
+    processed_eas = set(checkpoint.get("processed_eas", []))
+    cvars.update(checkpoint.get("cvars", {}))
+    if processed_eas:
+        msg_info(f"  Resuming from checkpoint: {len(processed_eas)} functions "
+                 f"already processed, {len(cvars)} CVars extracted so far")
+
     for idx, (func_ea, names) in enumerate(func_to_names.items()):
+        if func_ea in processed_eas:
+            continue
         # Decompile the function
         if func_ea in decompile_cache:
             pseudocode = decompile_cache[func_ea]
@@ -705,11 +715,25 @@ def _analyze_registration_sites(session, candidates, register_funcs, bulk_funcs)
                         info["callback_ea"] = cb_int
                 cvars[name] = info
 
+        processed_eas.add(func_ea)
+
         # Progress
         if (idx + 1) % 200 == 0:
             elapsed = time.time() - start
             msg(f"  Analyzed {idx + 1}/{total_funcs} functions, "
                 f"{len(cvars)} CVars found ({elapsed:.1f}s)")
+
+        # Checkpoint every 1000 functions
+        if (idx + 1) % 1000 == 0:
+            session.db.kv_set("cvars_phase3_checkpoint", {
+                "processed_eas": list(processed_eas),
+                "cvars": cvars,
+            })
+            session.db.commit()
+
+    # Phase 3 done — clear checkpoint so a re-run starts clean
+    session.db.kv_set("cvars_phase3_checkpoint", None)
+    session.db.commit()
 
     elapsed = time.time() - start
     msg_info(f"  Registration analysis complete: {len(cvars)} CVars extracted "

@@ -13,6 +13,7 @@ This replaces the need for separate orchestrator scripts by using
 the plugin's unified analysis framework.
 """
 
+import os
 import sys
 import time
 import argparse
@@ -30,8 +31,8 @@ def _parse_headless_args():
     )
     parser.add_argument(
         "--preset", type=str, default="full",
-        choices=["quick", "full", "complete", "llm_only", "extraction", "quality"],
-        help="Batch preset to run (default: full)",
+        choices=["quick", "full", "complete", "llm_only", "extraction", "quality", "analyzers_only"],
+        help="Batch preset to run (default: full). 'analyzers_only' skips imports/enrichment/LLM/QA — useful for per-analyzer probes when DB is already populated.",
     )
     parser.add_argument(
         "--output", type=str, default=None,
@@ -50,14 +51,16 @@ def _parse_headless_args():
         help="Only analyze functions in this system (e.g., housing)",
     )
 
-    # IDA passes script args after the script path in sys.argv
-    # Filter out IDA's own arguments
+    # IDA passes script args after the script path in sys.argv.
+    # Match either the canonical entry (headless.py) or the space-free wrapper
+    # (tc_wow_headless_run.py) — IDA's -S can't handle spaces in script paths,
+    # so callers often invoke via the wrapper.
     script_args = []
     capture = False
     for arg in sys.argv:
         if capture:
             script_args.append(arg)
-        elif arg.endswith("headless.py"):
+        elif arg.endswith("headless.py") or arg.endswith("tc_wow_headless_run.py"):
             capture = True
 
     try:
@@ -105,7 +108,7 @@ def run_headless_analysis():
             print(f"[TC WoW]   Imported {sum(v for v in import_results.values() if v > 0)} records")
 
         # Step 2: Run all analyzers
-        if preset in ("full", "complete", "quick", "extraction"):
+        if preset in ("full", "complete", "quick", "extraction", "analyzers_only"):
             print("[TC WoW] Step 2: Running analyzers...")
             from tc_wow_analyzer.analyzers import run_all_analyzers
             analysis_results = run_all_analyzers(session)
@@ -162,9 +165,12 @@ def run_headless_analysis():
         elapsed = time.time() - start
         print(f"[TC WoW] Headless analysis complete in {elapsed:.1f}s")
 
-        # Save IDB
-        idc.save_database(idc.get_idb_path(), 0)
-        print("[TC WoW] IDB saved.")
+        # Save IDB unless explicitly opted out (per-probe runs set TC_SKIP_IDB_SAVE=1
+        # so they don't drift the baseline between probe iters).
+        skip_save = os.environ.get("TC_SKIP_IDB_SAVE", "").strip() not in ("", "0", "false", "False")
+        if not skip_save:
+            idc.save_database(idc.get_idb_path(), 0)
+            print("[TC WoW] IDB saved.")
 
         session.shutdown()
 

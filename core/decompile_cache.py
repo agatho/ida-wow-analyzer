@@ -98,13 +98,11 @@ def cached_decompile(ea, db):
     )
 
     if row and row["func_hash"] == func_hash:
-        # Cache hit — deserialize
+        # Cache hit — deserialize directly from blob. Do NOT call
+        # ida_hexrays.decompile(ea) as a warm-up — that can hard-crash IDA
+        # on INTERR-prone functions, completely defeating the cache.
         try:
             import ida_hexrays
-            cfunc = ida_hexrays.decompile(ea)  # need a cfunc to call deserialize on...
-            # Actually, cfunc_t.deserialize() is a static/class method that creates a new cfunc
-            # The exact API: ida_hexrays.cfunc_t.deserialize(blob) or similar
-            # Let's try the actual 9.3 API
             blob = row["serialized"]
             if isinstance(blob, (bytes, memoryview)):
                 cfunc = ida_hexrays.cfunc_t.deserialize(bytes(blob))
@@ -112,7 +110,7 @@ def cached_decompile(ea, db):
                     return cfunc
         except Exception:
             pass
-        # Deserialization failed — fall through to fresh decompile
+        # Deserialization failed — fall through to fresh decompile (safe_decompile)
 
     # Cache miss or hash changed — decompile fresh
     from tc_wow_analyzer.core.utils import safe_decompile

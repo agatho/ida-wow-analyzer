@@ -485,12 +485,12 @@ def _scan_for_descriptor_tables(session):
         return False
 
     def _walk_table(start_ea, stride):
-        """Walk a descriptor table from start, returning list of field dicts."""
+        """Walk a descriptor table from start, returning list of field dicts.
+        Terminates on null name_ptr or implausible field name."""
         fields = []
         ea = start_ea
-        max_fields = 2000  # safety limit
 
-        while len(fields) < max_fields:
+        while True:
             name_ptr = _read_qword_safe(ea)
             if name_ptr is None or name_ptr == 0:
                 break

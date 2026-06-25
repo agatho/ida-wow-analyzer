@@ -87,9 +87,6 @@ SIGNATURE_BYTES_COUNT = 32
 # Structural diff threshold: ratio above which we call it RESTRUCTURED
 RESTRUCTURED_THRESHOLD = 0.50
 
-# Maximum number of functions to attempt decompilation on
-MAX_DECOMP_ATTEMPTS = 3000
-
 # Progress reporting interval
 PROGRESS_INTERVAL = 100
 
@@ -2480,10 +2477,6 @@ def generate_migration(session, old_db_path=None):
     decomp_count = 0
 
     for old_name, match in matched.items():
-        if decomp_count >= MAX_DECOMP_ATTEMPTS:
-            msg_warn(f"Reached decompilation limit ({MAX_DECOMP_ATTEMPTS}). "
-                     f"Skipping remaining functions.")
-            break
 
         changes = _diff_function_pair(match, old_data, session)
         if changes:

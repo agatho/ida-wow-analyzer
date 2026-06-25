@@ -27,6 +27,7 @@ Results are stored under kv_store key "idb_enrichment".
 """
 
 import json
+import os
 import re
 import time
 
@@ -175,6 +176,15 @@ def enrich_idb(session) -> int:
         total_enums_created += iter_enums
         iterations_done = iteration
         all_modified_eas.update(modified_eas)
+
+        # Persist IDB at iteration boundary so a Phase 4 idat crash doesn't
+        # discard the renames/types/comments from Phases 1-3.
+        try:
+            import idc as _idc
+            _idc.save_database(_idc.get_idb_path(), 0)
+            msg_info(f"  IDB saved (iteration {iteration} checkpoint)")
+        except Exception as _save_exc:
+            msg_warn(f"  IDB save failed at iteration {iteration}: {_save_exc}")
 
         if iter_total == 0:
             convergence_reached = True
@@ -447,18 +457,28 @@ def _phase2_type_recovery(db, modified_eas):
     """Apply type information from kv_store data.
 
     Sources:
-      - "object_layouts":    Set function parameter types for known classes
-      - "wire_formats":      Annotate Read/Write calls with field names
+      - "object_layouts":    Create struct types + set first-param types
+      - "wire_formats":      Create packet structs + annotate Read/Write calls
       - "recovered_enums":   Create IDA enum types
-
-    Returns:
-        (typed_count, enum_count)
+      - DB2 metadata:        Create struct per DB2 table
+      - Globals:             Apply names + types to data EAs
     """
     typed_count = 0
     enum_count = 0
 
+    # Create struct types FIRST so subsequent first-param assignment can
+    # reference them by name.
+    typed_count += _create_object_layout_structs(db)
     typed_count += _apply_object_layout_types(db, modified_eas)
+    typed_count += _create_db2_structs(db)
+    typed_count += _create_wire_format_structs(db)
+    typed_count += _create_update_field_structs(db)
+    typed_count += _create_jam_type_structs(db)
+    typed_count += _create_packet_structs_from_autodump_json(db)
+    typed_count += _create_packet_structs_from_handlers(db)
+    typed_count += _create_vtable_structs(db)
     typed_count += _annotate_wire_format_fields(db, modified_eas)
+    typed_count += _apply_global_names(db, modified_eas)
     enum_count += _create_ida_enums(db)
 
     msg_info(f"  Phase 2 (Type Recovery): {typed_count} types applied, "
@@ -466,8 +486,1222 @@ def _phase2_type_recovery(db, modified_eas):
     return typed_count, enum_count
 
 
+# ───────────────────────────────────────────────────────────────────────────
+# Struct creation helpers (object_layouts, DB2 metadata, wire formats, globals)
+# ───────────────────────────────────────────────────────────────────────────
+
+# Map analyzer-emitted field type names to C declarations the IDA parser accepts.
+_FIELD_TYPE_MAP = {
+    "uint8":   "unsigned __int8",
+    "int8":    "__int8",
+    "char":    "char",
+    "uint16":  "unsigned __int16",
+    "int16":   "__int16",
+    "uint32":  "unsigned __int32",
+    "int32":   "__int32",
+    "uint64":  "unsigned __int64",
+    "int64":   "__int64",
+    "float":   "float",
+    "double":  "double",
+    "ptr":     "void *",
+    "pointer": "void *",
+    "string":  "char *",
+    "guid":    "unsigned __int64",
+}
+
+
+def _safe_struct_name(raw):
+    """Sanitize a class/table name to a valid C identifier."""
+    if not raw:
+        return None
+    s = re.sub(r'[^A-Za-z0-9_]', '_', raw)
+    if not s:
+        return None
+    if s[0].isdigit():
+        s = "S_" + s
+    return s
+
+
+def _field_type_decl(t, size):
+    """Render a field-type to a C declaration. Falls back to byte arrays."""
+    if isinstance(t, str):
+        ct = _FIELD_TYPE_MAP.get(t.lower())
+        if ct:
+            return ct
+    # Fallback: opaque byte array sized to the field
+    if size and size >= 1:
+        return f"unsigned __int8[{size}]"
+    return "unsigned __int8"
+
+
+def _emit_struct_decl(struct_name, fields, total_size):
+    """Build a C struct declaration with explicit padding for offset gaps.
+
+    `fields` is a list of dicts with keys: offset, name, type, size.
+    Returns a multi-line C declaration string.
+    """
+    if not struct_name:
+        return None
+
+    # Sort by offset, dedupe overlapping (keep first)
+    sorted_fields = sorted(
+        (f for f in fields if isinstance(f, dict) and "offset" in f),
+        key=lambda f: f["offset"],
+    )
+    seen_offsets = set()
+    unique_fields = []
+    for f in sorted_fields:
+        off = f.get("offset")
+        if off in seen_offsets:
+            continue
+        seen_offsets.add(off)
+        unique_fields.append(f)
+
+    lines = [f"struct {struct_name} {{"]
+    cursor = 0
+    used_names = set()
+    for f in unique_fields:
+        off = int(f.get("offset") or 0)
+        if off > cursor:
+            gap = off - cursor
+            pad_name = f"_pad_{cursor:X}"
+            lines.append(f"  unsigned __int8 {pad_name}[{gap}];")
+            cursor = off
+        elif off < cursor:
+            # Overlap — skip (decompiled offsets sometimes overlap with prior)
+            continue
+
+        raw_name = f.get("name") or f"field_{off:X}"
+        fname = re.sub(r'[^A-Za-z0-9_]', '_', raw_name)
+        if not fname or fname[0].isdigit():
+            fname = f"f_{fname}"
+        # Dedupe field names within struct
+        if fname in used_names:
+            fname = f"{fname}_{off:X}"
+            if fname in used_names:
+                continue
+        used_names.add(fname)
+
+        size = int(f.get("size") or 0) or 8
+        ctype = _field_type_decl(f.get("type"), size)
+        lines.append(f"  {ctype} {fname};")
+        cursor = off + size
+
+    if total_size and cursor < total_size:
+        gap = total_size - cursor
+        lines.append(f"  unsigned __int8 _tail_pad[{gap}];")
+
+    lines.append("};")
+    return "\n".join(lines)
+
+
+def _register_struct_decl(decl, struct_name, debug_first_failure=None):
+    """Parse + register a struct decl into the IDB type library. Returns bool.
+    Tries `idc_parse_types` first (handles multi-decl files), falls back to
+    `parse_decl` + `set_named_type` for single-struct cases that the first
+    parser silently rejects (some void* member combos do this in IDA 9.x).
+    """
+    if not decl or not _HAS_TYPEINF:
+        return False
+    til = ida_typeinf.get_idati()
+    existing = ida_typeinf.tinfo_t()
+    if existing.get_named_type(til, struct_name):
+        return False  # already exists
+
+    # Try idc_parse_types first
+    try:
+        added = ida_typeinf.idc_parse_types(decl, 0)
+    except Exception as exc:
+        added = -1
+        first_exc = exc
+    else:
+        first_exc = None
+    if isinstance(added, int) and added > 0:
+        return True
+
+    # Fallback: parse_decl directly. Needs a typedef-style decl: prepend "typedef"
+    # to make it a single named type? No — parse_decl wants a TYPE expression,
+    # not a struct definition. Use parse_decls (with 's') which handles multiple.
+    try:
+        # parse_decls returns the count of types parsed/added
+        if hasattr(ida_typeinf, "parse_decls"):
+            added2 = ida_typeinf.parse_decls(til, decl, None, 0)
+            if isinstance(added2, int) and added2 > 0:
+                # Verify it's now in the TIL
+                check = ida_typeinf.tinfo_t()
+                if check.get_named_type(til, struct_name):
+                    return True
+    except Exception as exc:
+        first_exc = first_exc or exc
+
+    # Last-ditch: build via parse_decl on the trailing declaration after
+    # converting the struct definition into a typedef.
+    try:
+        typedef_decl = decl.rstrip().rstrip(";")
+        # Wrap as `typedef struct { ... } NAME;` form
+        body_start = typedef_decl.find("{")
+        body_end = typedef_decl.rfind("}")
+        if body_start > 0 and body_end > body_start:
+            body = typedef_decl[body_start:body_end + 1]
+            td = f"typedef struct {body} {struct_name};"
+            tif = ida_typeinf.tinfo_t()
+            if hasattr(ida_typeinf, "parse_decl"):
+                rc = ida_typeinf.parse_decl(tif, til, td, 0)
+                if rc is not None:
+                    sn_rc = tif.set_named_type(til, struct_name, ida_typeinf.NTF_REPLACE)
+                    if sn_rc in (0, getattr(ida_typeinf, "TERR_OK", 0)):
+                        return True
+    except Exception as exc:
+        first_exc = first_exc or exc
+
+    if debug_first_failure is not None and len(debug_first_failure) < 3:
+        debug_first_failure.append(
+            (struct_name, f"all paths failed (first exc: {first_exc!r}, idc_rc={added})", decl[:200])
+        )
+    return False
+
+
+def _create_object_layout_structs(db):
+    """Create IDA struct types for every recovered class layout."""
+    if not _HAS_TYPEINF:
+        return 0
+    layouts = db.kv_get("object_layouts")
+    if not layouts:
+        return 0
+    if isinstance(layouts, dict):
+        layouts = list(layouts.values())
+    if not isinstance(layouts, list):
+        return 0
+
+    created = 0
+    for layout in layouts:
+        if not isinstance(layout, dict):
+            continue
+        struct_name = _safe_struct_name(layout.get("class_name"))
+        if not struct_name:
+            continue
+        fields = layout.get("fields") or []
+        total = layout.get("total_size") or 0
+        decl = _emit_struct_decl(struct_name, fields, total)
+        if decl and _register_struct_decl(decl, struct_name):
+            created += 1
+    if created:
+        msg_info(f"  Phase 2: created {created} struct types from object_layouts")
+    return created
+
+
+def _create_db2_structs(db):
+    """Create IDA struct types for each DB2 table.
+
+    Source priority:
+      1. WoWDBDefs at C:/dumps/WoWDBDefs/definitions/<Name>.dbd — canonical
+         per-build field schema (preferred — has real types and sizes).
+      2. plugin's tc_db2_struct:<Name> kv entries (only TC class name, no fields).
+
+    Builds tuple matched against the build_number in cfg, fallback to nearest.
+    """
+    if not _HAS_TYPEINF:
+        return 0
+
+    # Determine which build to look up in DBD layouts. The autodump JSON has
+    # the build number; we also encode it in the cfg via the active builds row.
+    try:
+        from tc_wow_analyzer.analyzers._dbd_parser import (
+            parse_dbd_file, find_layout_for_build, column_to_ctype
+        )
+    except Exception as exc:
+        msg_warn(f"  Phase 2: DBD parser import failed: {exc}")
+        return 0
+
+    dbd_dir = r"C:\dumps\WoWDBDefs\definitions"
+    if not os.path.isdir(dbd_dir):
+        msg_warn(f"  Phase 2: DBD definitions not found at {dbd_dir}")
+        return 0
+
+    # Build target build tuple. Prefer the configured build_number; the major
+    # version we'll guess from the build number range.
+    build_num = 67186
+    try:
+        from tc_wow_analyzer.core.config import cfg as _cfg
+        build_num = _cfg.build_number or build_num
+    except Exception:
+        pass
+
+    # Heuristic mapping build_number -> major.minor.patch:
+    #   60000+: 11.x (Dragonflight-era)
+    #   65000+: 11.1.x
+    #   67000+: 12.0.x (Midnight beta/release)
+    if build_num >= 67000:
+        build_tuple = (12, 0, 5, build_num)
+    elif build_num >= 65000:
+        build_tuple = (11, 1, 5, build_num)
+    elif build_num >= 60000:
+        build_tuple = (11, 0, 5, build_num)
+    else:
+        build_tuple = (10, 2, 7, build_num)
+
+    # Pull DB2 table names from the SQL table
+    try:
+        table_names = [r["name"] for r in db.fetchall(
+            "SELECT name FROM db2_tables WHERE name IS NOT NULL"
+        )]
+    except Exception:
+        table_names = []
+
+    if not table_names:
+        return 0
+
+    created = 0
+    skipped_no_dbd = 0
+    skipped_no_layout = 0
+
+    for table_name in table_names:
+        # WoWDBDefs filename matches table name; some tables use underscores
+        dbd_path = os.path.join(dbd_dir, f"{table_name}.dbd")
+        if not os.path.isfile(dbd_path):
+            skipped_no_dbd += 1
+            continue
+        try:
+            dbd = parse_dbd_file(dbd_path)
+        except Exception:
+            continue
+
+        layout = find_layout_for_build(dbd, build_tuple)
+        if not layout or not layout.fields:
+            skipped_no_layout += 1
+            continue
+
+        # Build struct fields by walking the layout in declared order
+        cursor = 0
+        struct_fields = []
+        for lf in layout.fields:
+            col = dbd.columns.get(lf.name)
+            if not col:
+                continue
+            ctype, sz = column_to_ctype(col, lf)
+            count = lf.array_size or 1
+            elem_sz = sz
+            if count > 1:
+                ctype = ctype + f"[{count}]"
+                sz = elem_sz * count
+            struct_fields.append({
+                "offset": cursor,
+                "name":   lf.name,
+                "type":   None,           # not used; we override below
+                "size":   sz,
+                "_ctype": ctype,
+            })
+            cursor += sz
+
+        if not struct_fields:
+            continue
+
+        struct_name = "DB2_" + _safe_struct_name(table_name)
+        # Custom struct decl: we already have the C type per field.
+        lines = [f"struct {struct_name} {{"]
+        used_names = set()
+        for f in struct_fields:
+            fname = re.sub(r'[^A-Za-z0-9_]', '_', f["name"])
+            if not fname or fname[0].isdigit():
+                fname = f"f_{fname}"
+            if fname in used_names:
+                fname = f"{fname}_{f['offset']:X}"
+                if fname in used_names:
+                    continue
+            used_names.add(fname)
+            lines.append(f"  {f['_ctype']} {fname};")
+        lines.append("};")
+        decl = "\n".join(lines)
+
+        if _register_struct_decl(decl, struct_name):
+            created += 1
+
+    if created:
+        msg_info(
+            f"  Phase 2: created {created} DB2 struct types from WoWDBDefs "
+            f"(skipped {skipped_no_dbd} without .dbd, "
+            f"{skipped_no_layout} without matching layout)"
+        )
+    return created
+
+
+def _create_wire_format_structs(db):
+    """Create one IDA struct per CMSG/SMSG packet from `wire_formats`."""
+    if not _HAS_TYPEINF:
+        return 0
+    formats = db.kv_get("wire_formats")
+    if not formats:
+        return 0
+    if isinstance(formats, dict):
+        format_list = list(formats.values())
+    elif isinstance(formats, list):
+        format_list = formats
+    else:
+        return 0
+
+    created = 0
+    for fmt in format_list:
+        if not isinstance(fmt, dict):
+            continue
+        opcode_name = fmt.get("opcode") or fmt.get("opcode_name") or fmt.get("name")
+        if not opcode_name:
+            continue
+        struct_name = _safe_struct_name(opcode_name) + "_packet"
+        fields = fmt.get("fields") or []
+        # Wire format fields may have read sizes; treat them as sequential
+        cursor = 0
+        with_offsets = []
+        for f in fields:
+            if not isinstance(f, dict):
+                continue
+            sz = int(f.get("size") or 4)
+            with_offsets.append({
+                "offset": cursor,
+                "name":   f.get("name") or f"field_{cursor:X}",
+                "type":   f.get("type") or "uint32",
+                "size":   sz,
+            })
+            cursor += sz
+        if not with_offsets:
+            continue
+        decl = _emit_struct_decl(struct_name, with_offsets, cursor)
+        if decl and _register_struct_decl(decl, struct_name):
+            created += 1
+
+    if created:
+        msg_info(f"  Phase 2: created {created} wire-format packet structs")
+    return created
+
+
+def _create_update_field_structs(db):
+    """Create one IDA struct per object_type from the update_fields table.
+
+    UpdateField offsets/sizes in WoW are in DWORDs (4 bytes each). Each struct
+    becomes <Class>_UpdateFields with named field_NN entries at byte offsets.
+    """
+    if not _HAS_TYPEINF:
+        return 0
+
+    try:
+        rows = db.fetchall(
+            "SELECT object_type, field_name, field_offset, field_size, "
+            "field_type, array_count "
+            "FROM update_fields WHERE object_type IS NOT NULL "
+            "ORDER BY object_type, field_offset"
+        )
+    except Exception:
+        return 0
+
+    if not rows:
+        return 0
+
+    # Group by object_type
+    by_obj = {}
+    for r in rows:
+        obj = r["object_type"]
+        by_obj.setdefault(obj, []).append(dict(r))
+
+    created = 0
+    for obj_type, fields in by_obj.items():
+        struct_name = "UF_" + _safe_struct_name(obj_type)
+        struct_fields = []
+        for f in fields:
+            # field_offset is stored as hex string; convert to int (dword index)
+            raw_off = f["field_offset"]
+            try:
+                if isinstance(raw_off, str):
+                    dword_off = int(raw_off, 16) if raw_off.startswith("0x") else int(raw_off)
+                else:
+                    dword_off = int(raw_off)
+            except (TypeError, ValueError):
+                continue
+            byte_off = dword_off * 4
+            dword_size = max(1, int(f["field_size"] or 1))
+            byte_size = dword_size * 4
+            arr = max(1, int(f["array_count"] or 1))
+            # In C the type is the element type and array dims attach to the
+            # declarator, not to the type spec.
+            ctype = "unsigned __int32"
+            dims = []
+            if dword_size > 1:
+                dims.append(dword_size)
+            if arr > 1:
+                dims.append(arr)
+            arr_suffix = "".join(f"[{d}]" for d in dims)
+            struct_fields.append({
+                "offset": byte_off,
+                "name":   f["field_name"] or f"field_{byte_off:X}",
+                "type":   None,
+                "size":   byte_size * arr,
+                "_ctype": ctype,
+                "_arr":   arr_suffix,
+            })
+
+        if not struct_fields:
+            continue
+
+        # Sort + dedupe by offset (keep first)
+        struct_fields.sort(key=lambda x: x["offset"])
+        seen_off = set()
+        unique = []
+        for sf in struct_fields:
+            if sf["offset"] in seen_off:
+                continue
+            seen_off.add(sf["offset"])
+            unique.append(sf)
+
+        # Emit decl with explicit padding for gaps
+        lines = [f"struct {struct_name} {{"]
+        cursor = 0
+        used_names = set()
+        for sf in unique:
+            if sf["offset"] > cursor:
+                gap = sf["offset"] - cursor
+                lines.append(f"  unsigned __int8 _pad_{cursor:X}[{gap}];")
+                cursor = sf["offset"]
+            elif sf["offset"] < cursor:
+                continue  # overlap
+            fname = re.sub(r'[^A-Za-z0-9_]', '_', sf["name"])
+            if not fname or fname[0].isdigit():
+                fname = f"f_{fname}"
+            if fname in used_names:
+                fname = f"{fname}_{sf['offset']:X}"
+                if fname in used_names:
+                    continue
+            used_names.add(fname)
+            arr_suffix = sf.get("_arr", "")
+            lines.append(f"  {sf['_ctype']} {fname}{arr_suffix};")
+            cursor = sf["offset"] + sf["size"]
+        lines.append("};")
+        decl = "\n".join(lines)
+
+        if _register_struct_decl(decl, struct_name):
+            created += 1
+
+    if created:
+        msg_info(f"  Phase 2: created {created} UpdateField struct types")
+    return created
+
+
+def _create_vtable_structs(db):
+    """Create one IDA struct per RTTI class with N function-pointer slots,
+    using known method names where available.
+
+    Sources for class -> vtable_rva mapping:
+      - wow_rtti_67186.json (1107 classes, but only 6 have num_virtuals)
+      - wow_ctor_dtor_67186.json (2656 ctor/dtor entries → class+vtable_rva)
+      - vtable_entries SQL table (when populated)
+
+    Slot count is derived by walking the binary at vtable_rva, reading
+    consecutive 8-byte function pointers until we hit a non-function value
+    (most reliable method since RTTI num_virtuals is rarely populated).
+
+    Output: Vftbl_<ClassName> struct with named or slot_N fields.
+    """
+    if not _HAS_TYPEINF:
+        return 0
+
+    # Build a unified {class_name: vtable_rva_int} map from all sources.
+    classes_dict = {}
+    for p in (r"C:\dumps\wow_rtti_67186.json", r"C:\dumps\wow_rtti.json"):
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as fh:
+                    d = json.load(fh)
+                for c in d.get("classes", []) or []:
+                    if not isinstance(c, dict):
+                        continue
+                    name = c.get("name")
+                    rva_raw = c.get("vtable_rva")
+                    if not name or not rva_raw:
+                        continue
+                    try:
+                        rva = int(rva_raw, 16) if isinstance(rva_raw, str) and rva_raw.startswith("0x") else int(rva_raw)
+                    except (ValueError, TypeError):
+                        continue
+                    if rva > 0:
+                        classes_dict[name] = rva
+            except Exception:
+                pass
+            break
+
+    for p in (r"C:\dumps\wow_ctor_dtor_67186.json", r"C:\dumps\wow_ctor_dtor.json"):
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as fh:
+                    d = json.load(fh)
+                for ent in d.get("entries", []) or []:
+                    if not isinstance(ent, dict):
+                        continue
+                    name = ent.get("class")
+                    rva_raw = ent.get("vtable_rva")
+                    if not name or not rva_raw:
+                        continue
+                    if name in classes_dict:
+                        continue
+                    try:
+                        rva = int(rva_raw, 16) if isinstance(rva_raw, str) and rva_raw.startswith("0x") else int(rva_raw)
+                    except (ValueError, TypeError):
+                        continue
+                    if rva > 0:
+                        classes_dict[name] = rva
+            except Exception:
+                pass
+            break
+
+    classes = [{"name": n, "vtable_rva": rva} for n, rva in classes_dict.items()]
+
+    # Add anonymous vtables (vtables found in binary that don't link to a class
+    # name in the RTTI). They still get a struct synthesized so indirect calls
+    # through them resolve to typed slot accesses.
+    for p in (r"C:\dumps\wow_rtti_67186.json", r"C:\dumps\wow_rtti.json"):
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as fh:
+                    d = json.load(fh)
+                for av in d.get("anonymous_vtables", []) or []:
+                    if not isinstance(av, dict):
+                        continue
+                    rva_raw = av.get("rva")
+                    if not rva_raw:
+                        continue
+                    try:
+                        rva = int(rva_raw, 16) if isinstance(rva_raw, str) and rva_raw.startswith("0x") else int(rva_raw)
+                    except (ValueError, TypeError):
+                        continue
+                    if rva > 0:
+                        classes.append({
+                            "name": f"Anon_{rva:X}",
+                            "vtable_rva": rva,
+                            "_anonymous": True,
+                            "_num_methods_hint": av.get("num_methods"),
+                        })
+            except Exception:
+                pass
+            break
+
+    if not classes:
+        return 0
+
+    # Optional named method lookup
+    method_names_by_class = {}
+    methods_paths = [
+        r"C:\dumps\wow_vtable_methods_67186.json",
+        r"C:\dumps\wow_vtable_methods.json",
+    ]
+    for p in methods_paths:
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+            for m in d.get("methods", []) or []:
+                if not isinstance(m, dict):
+                    continue
+                cls = m.get("class")
+                idx = m.get("vtable_index")
+                name = m.get("name")
+                if cls and idx is not None and name:
+                    method_names_by_class.setdefault(cls, {})[idx] = name
+            break
+        except Exception:
+            continue
+
+    # Also try DB-side vtable_entries
+    try:
+        for r in db.fetchall(
+            "SELECT v.class_name, e.slot_index, e.func_name FROM vtable_entries e "
+            "JOIN vtables v ON v.ea = e.vtable_ea "
+            "WHERE e.func_name IS NOT NULL"
+        ):
+            method_names_by_class.setdefault(r["class_name"], {})[r["slot_index"]] = r["func_name"]
+    except Exception:
+        pass
+
+    # Build a reusable uint64 tinfo for the slot type (same 8 bytes as void* on x64).
+    til = ida_typeinf.get_idati()
+    uint64_tif = ida_typeinf.tinfo_t()
+    if hasattr(uint64_tif, "create_simple_type"):
+        # IDA 9.x exposes BT_INT64 etc.
+        try:
+            uint64_tif.create_simple_type(ida_typeinf.BTF_UINT64)
+        except Exception:
+            uint64_tif = None
+    if uint64_tif is None or uint64_tif.empty():
+        # Fallback: parse the type spec
+        uint64_tif = ida_typeinf.tinfo_t()
+        try:
+            ida_typeinf.parse_decl(uint64_tif, til, "unsigned __int64;", 0)
+        except Exception:
+            pass
+
+    created = 0
+    fail_create = 0
+    fail_set_named = 0
+    fail_no_uint64 = 0
+    skipped_existing = 0
+
+    if uint64_tif is None or uint64_tif.empty():
+        msg_warn("  Phase 2: cannot build uint64 tinfo — vtable struct creation skipped")
+        return 0
+
+    # Helpers to walk binary memory for vtable size discovery
+    try:
+        import ida_bytes
+        import ida_funcs as _ida_funcs
+        import idaapi as _idaapi
+        image_base = _idaapi.get_imagebase()
+    except Exception:
+        msg_warn("  Phase 2: ida_bytes unavailable — vtable struct creation skipped")
+        return 0
+
+    def _count_vtable_slots(vtable_ea, max_slots=512):
+        """Walk consecutive 8-byte qwords; return how many point to functions."""
+        count = 0
+        ea = vtable_ea
+        for _ in range(max_slots):
+            try:
+                ptr = ida_bytes.get_qword(ea)
+            except Exception:
+                break
+            if not ptr:
+                break
+            # Must be a known function
+            if not _ida_funcs.get_func(ptr):
+                break
+            count += 1
+            ea += 8
+        return count
+
+    for cls in classes:
+        if not isinstance(cls, dict):
+            continue
+        name = cls.get("name")
+        rva = cls.get("vtable_rva")
+        if not name or not rva:
+            continue
+        vtable_ea = image_base + int(rva)
+        n_virt = _count_vtable_slots(vtable_ea)
+        if n_virt == 0:
+            continue
+        base = _safe_struct_name(name)
+        if not base:
+            continue
+        struct_name = "Vftbl_" + base
+
+        # Skip if already exists in TIL
+        existing = ida_typeinf.tinfo_t()
+        if existing.get_named_type(til, struct_name):
+            skipped_existing += 1
+            continue
+
+        named = method_names_by_class.get(name, {})
+        utd = ida_typeinf.udt_type_data_t()
+        used_field_names = set()
+        n_virt_int = int(n_virt)
+        # Cap at 256 slots to avoid pathological vtables
+        if n_virt_int > 256:
+            n_virt_int = 256
+
+        for slot in range(n_virt_int):
+            mname = named.get(slot)
+            if mname:
+                fname = re.sub(r'[^A-Za-z0-9_]', '_', mname)
+                if not fname or fname[0].isdigit():
+                    fname = f"m_{fname}"
+                if fname in used_field_names:
+                    fname = f"{fname}_s{slot}"
+            else:
+                fname = f"slot_{slot}"
+            used_field_names.add(fname)
+
+            udm = ida_typeinf.udt_member_t()
+            udm.name = fname
+            udm.offset = slot * 64       # bit offset
+            udm.size = 64                # bit size
+            udm.type = uint64_tif
+            utd.push_back(udm)
+
+        # Set total size of the udt: n * 64 bits
+        try:
+            utd.total_size = n_virt_int * 8   # bytes (some IDA versions use this)
+        except Exception:
+            pass
+        try:
+            utd.unpadded_size = n_virt_int * 8
+        except Exception:
+            pass
+
+        tif = ida_typeinf.tinfo_t()
+        try:
+            ok = tif.create_udt(utd, ida_typeinf.BTF_STRUCT)
+        except Exception:
+            ok = False
+        if not ok:
+            fail_create += 1
+            continue
+
+        try:
+            rc = tif.set_named_type(til, struct_name, ida_typeinf.NTF_REPLACE)
+        except Exception:
+            rc = -1
+        if rc in (0, getattr(ida_typeinf, "TERR_OK", 0)):
+            created += 1
+        else:
+            fail_set_named += 1
+
+    msg_info(
+        f"  Phase 2: vtable structs (Vftbl_<Class>) — "
+        f"created={created}, skipped_existing={skipped_existing}, "
+        f"fail_create={fail_create}, fail_set_named={fail_set_named} "
+        f"(of {len(classes)} candidates)"
+    )
+    return created
+
+
+def _create_packet_structs_from_autodump_json(db):
+    """Synthesize packet structs from autodump's wow_packet_structures_*.json.
+
+    The 67186 autodump produced an empty packet list (regression vs older
+    builds). Fall back to the 66838 archive at `c:\\dumps_66838\\` where 294
+    valid packet definitions exist with field types — JAM type names mostly
+    didn't change build-to-build, so the schemas stay useful.
+    """
+    if not _HAS_TYPEINF:
+        return 0
+
+    candidate_paths = [
+        r"C:\dumps\wow_packet_structures_67186.json",
+        r"C:\dumps_66838\wow_packet_structures_66838.json",
+        r"C:\dumps_66198\wow_packet_structures_66198.json",
+    ]
+    packets = None
+    src_path = None
+    for p in candidate_paths:
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        cand = d.get("packets") or []
+        if cand:
+            packets = cand
+            src_path = p
+            break
+
+    if not packets:
+        return 0
+
+    # Map autodump primitive type names to IDA C types
+    type_map = {
+        "uint8":   ("unsigned __int8", 1),
+        "uint16":  ("unsigned __int16", 2),
+        "uint32":  ("unsigned __int32", 4),
+        "uint64":  ("unsigned __int64", 8),
+        "int8":    ("__int8", 1),
+        "int16":   ("__int16", 2),
+        "int32":   ("__int32", 4),
+        "int64":   ("__int64", 8),
+        "float":   ("float", 4),
+        "double":  ("double", 8),
+        "bool":    ("unsigned __int8", 1),
+        "string":  ("char *", 8),
+        "guid":    ("unsigned __int64[2]", 16),
+        "objectguid": ("unsigned __int64[2]", 16),
+        "packed_guid": ("unsigned __int64[2]", 16),
+    }
+
+    created = 0
+    skipped_empty = 0
+    debug_failures = []
+    for pkt in packets:
+        if not isinstance(pkt, dict):
+            continue
+        name = pkt.get("name")
+        fields = pkt.get("fields") or []
+        if not name or not fields:
+            skipped_empty += 1
+            continue
+
+        # Prefix to avoid collision with existing object_layouts class types.
+        # The autodump's packet name is the JAM/class name; we want a distinct
+        # struct that captures the *wire layout*, not the in-memory class.
+        struct_name = "Wire_" + _safe_struct_name(name)
+        if not struct_name:
+            continue
+
+        cursor = 0
+        out_fields = []
+        for fld in fields:
+            if not isinstance(fld, dict):
+                continue
+            t = (fld.get("type") or "").lower()
+            ctype, sz = type_map.get(t, ("unsigned __int32", 4))
+            out_fields.append({
+                "offset": cursor,
+                "name":   fld.get("name") or f"field_{fld.get('index', cursor)}",
+                "_ctype": ctype,
+                "size":   sz,
+            })
+            cursor += sz
+
+        if not out_fields:
+            continue
+
+        lines = [f"struct {struct_name} {{"]
+        used_names = set()
+        for f in out_fields:
+            fname = re.sub(r'[^A-Za-z0-9_]', '_', f["name"])
+            if not fname or fname[0].isdigit():
+                fname = f"f_{fname}"
+            if fname in used_names:
+                fname = f"{fname}_{f['offset']:X}"
+                if fname in used_names:
+                    continue
+            used_names.add(fname)
+            lines.append(f"  {f['_ctype']} {fname};")
+        lines.append("};")
+        decl = "\n".join(lines)
+
+        if _register_struct_decl(decl, struct_name, debug_first_failure=debug_failures):
+            created += 1
+
+    msg_info(f"  Phase 2: autodump-json packets — found {len(packets)} in "
+             f"{os.path.basename(src_path) if src_path else '?'}, "
+             f"skipped_empty={skipped_empty}, created={created}")
+    for sn, why, dpreview in debug_failures:
+        msg_info(f"    debug: {sn} -> {why}; decl: {dpreview[:120]!r}")
+    return created
+
+
+def _create_packet_structs_from_handlers(db):
+    """Synthesize <OPCODE>_packet structs by mining each opcode handler's
+    pseudocode for typed memory-offset reads.
+
+    Wire Format Recovery's pattern matcher (ReadUint32 etc.) doesn't fire on
+    WoW's actual decompiled output, which uses raw `*(_DWORD *)(buf + 0x10)`
+    style. This pass extracts those offsets and types directly.
+
+    Checkpointed via kv_store["packet_structs_checkpoint"] so a Phase 2 idat
+    crash doesn't lose progress across the ~3000 handlers.
+    """
+    if not _HAS_TYPEINF:
+        return 0
+
+    try:
+        rows = db.fetchall(
+            "SELECT tc_name, handler_ea, direction FROM opcodes "
+            "WHERE handler_ea IS NOT NULL AND tc_name IS NOT NULL"
+        )
+    except Exception:
+        return 0
+    if not rows:
+        return 0
+
+    checkpoint = db.kv_get("packet_structs_checkpoint") or {}
+    processed = set(checkpoint.get("processed_handlers", []))
+    created = checkpoint.get("created", 0)
+
+    typed_re = re.compile(
+        r'\*\s*\(\s*(_?[A-Za-z]+)\s*\*\s*\)\s*\(\s*'
+        r'\b(?:[avtl][0-9]+|this|a1|a2|packet|p_packet|buf|buffer|data)'
+        r'\s*\+\s*(0x[0-9A-Fa-f]+|\d+)'
+    )
+    ctype_map = {
+        "byte":   ("unsigned __int8", 1),
+        "word":   ("unsigned __int16", 2),
+        "dword":  ("unsigned __int32", 4),
+        "qword":  ("unsigned __int64", 8),
+        "float":  ("float", 4),
+        "double": ("double", 8),
+        "char":   ("char", 1),
+    }
+
+    new_in_this_run = 0
+    for r in rows:
+        opc_name = r["tc_name"]
+        ea = r["handler_ea"]
+        if opc_name in processed:
+            continue
+        try:
+            ps = get_decompiled_text(ea)
+        except Exception:
+            ps = None
+        if not ps:
+            processed.add(opc_name)
+            continue
+
+        offsets = {}
+        for m in typed_re.finditer(ps):
+            ctype_raw = m.group(1).strip().lower().lstrip("_")
+            off_str = m.group(2)
+            try:
+                off = int(off_str, 16) if off_str.startswith("0x") else int(off_str)
+            except ValueError:
+                continue
+            if off > 0xFFFF:
+                continue
+            ct = ctype_map.get(ctype_raw)
+            if not ct:
+                continue
+            existing = offsets.get(off)
+            if existing is None or ct[1] > existing[1]:
+                offsets[off] = ct
+
+        if not offsets:
+            processed.add(opc_name)
+            continue
+
+        struct_name = _safe_struct_name(opc_name) + "_packet"
+        sorted_offs = sorted(offsets.items())
+        lines = [f"struct {struct_name} {{"]
+        cursor = 0
+        used_names = set()
+        for off, (ctype, sz) in sorted_offs:
+            if off > cursor:
+                gap = off - cursor
+                lines.append(f"  unsigned __int8 _pad_{cursor:X}[{gap}];")
+                cursor = off
+            elif off < cursor:
+                continue
+            fname = f"field_{off:X}"
+            if fname in used_names:
+                continue
+            used_names.add(fname)
+            lines.append(f"  {ctype} {fname};")
+            cursor = off + sz
+        lines.append("};")
+        decl = "\n".join(lines)
+
+        if _register_struct_decl(decl, struct_name):
+            created += 1
+            new_in_this_run += 1
+        processed.add(opc_name)
+
+        # Checkpoint every 200 handlers
+        if len(processed) % 200 == 0:
+            db.kv_set("packet_structs_checkpoint", {
+                "processed_handlers": list(processed),
+                "created": created,
+            })
+            db.commit()
+
+    db.kv_set("packet_structs_checkpoint", {
+        "processed_handlers": list(processed),
+        "created": created,
+    })
+    db.commit()
+
+    if new_in_this_run:
+        msg_info(f"  Phase 2: synthesized {new_in_this_run} packet structs "
+                 f"from handler pseudocode (cumulative: {created})")
+    return new_in_this_run
+
+
+def _create_jam_type_structs(db):
+    """Create JAM message structs by decompiling each JAM serializer/deserializer
+    function and extracting the byte-offset reads/writes inside.
+
+    For each `jam_types` row with a serializer_ea or deserializer_ea, we:
+      1. Decompile the serializer
+      2. Find the maximum byte offset accessed (struct size estimate)
+      3. Synthesize a Jam<Name> struct by inferring fields at distinct offsets
+
+    This is a best-effort heuristic — fields default to uint32, exact types
+    require deeper analysis. But even un-typed fields at right offsets give
+    the decompiler symbolic names to use.
+    """
+    if not _HAS_TYPEINF:
+        return 0
+
+    try:
+        rows = db.fetchall(
+            "SELECT name, serializer_ea, deserializer_ea, fields_json "
+            "FROM jam_types WHERE name IS NOT NULL"
+        )
+    except Exception:
+        return 0
+    if not rows:
+        return 0
+
+    # Decompile each serializer once and extract byte-offset reads.
+    created = 0
+    pat_offset = re.compile(r'\b([avt][0-9]+|this|a1)\s*\+\s*(0x[0-9A-Fa-f]+|\d+)\b')
+    pat_typed_deref = re.compile(
+        r'\*\s*\(\s*'
+        r'(?:_?(?:BYTE|WORD|DWORD|QWORD|byte|word|dword|qword|float|double))'
+        r'\s*\*\s*\)\s*\(\s*'
+        r'\b(?:[avt][0-9]+|this|a1)\s*\+\s*(0x[0-9A-Fa-f]+|\d+)'
+    )
+
+    for r in rows:
+        jam_name = r["name"]
+        ea = r["serializer_ea"] or r["deserializer_ea"]
+        if not ea:
+            continue
+        try:
+            ps = get_decompiled_text(ea)
+        except Exception:
+            continue
+        if not ps:
+            continue
+
+        # Collect (offset, c_type) hints
+        offsets = {}
+        typed_re = re.compile(
+            r'\*\s*\(\s*(_?[A-Za-z]+)\s*\*\s*\)\s*\(\s*'
+            r'\b(?:[avt][0-9]+|this|a1)\s*\+\s*(0x[0-9A-Fa-f]+|\d+)'
+        )
+        for m in typed_re.finditer(ps):
+            ctype_raw = m.group(1).strip().lower().lstrip("_")
+            off_str = m.group(2)
+            try:
+                off = int(off_str, 16) if off_str.startswith("0x") else int(off_str)
+            except ValueError:
+                continue
+            if off > 0xFFFF:  # absurd, skip
+                continue
+            ctype_map = {
+                "byte":   "unsigned __int8",
+                "word":   "unsigned __int16",
+                "dword":  "unsigned __int32",
+                "qword":  "unsigned __int64",
+                "float":  "float",
+                "double": "double",
+                "char":   "char",
+            }
+            ctype = ctype_map.get(ctype_raw, "unsigned __int32")
+            sz = {"unsigned __int8": 1, "unsigned __int16": 2,
+                  "unsigned __int32": 4, "unsigned __int64": 8,
+                  "float": 4, "double": 8, "char": 1}[ctype]
+            existing = offsets.get(off)
+            if existing is None or sz > existing[1]:  # prefer larger size
+                offsets[off] = (ctype, sz)
+
+        if not offsets:
+            continue
+
+        struct_name = "Jam_" + _safe_struct_name(jam_name)
+        if not struct_name:
+            continue
+
+        sorted_offs = sorted(offsets.items())
+        lines = [f"struct {struct_name} {{"]
+        cursor = 0
+        used_names = set()
+        for off, (ctype, sz) in sorted_offs:
+            if off > cursor:
+                gap = off - cursor
+                lines.append(f"  unsigned __int8 _pad_{cursor:X}[{gap}];")
+                cursor = off
+            elif off < cursor:
+                continue
+            fname = f"field_{off:X}"
+            if fname in used_names:
+                continue
+            used_names.add(fname)
+            lines.append(f"  {ctype} {fname};")
+            cursor = off + sz
+        lines.append("};")
+        decl = "\n".join(lines)
+
+        if _register_struct_decl(decl, struct_name):
+            created += 1
+
+    if created:
+        msg_info(f"  Phase 2: created {created} JAM type structs")
+    return created
+
+
+def _apply_global_names(db, modified_eas):
+    """Apply names to globals from autodump JSON exports.
+
+    The autodump emits `named_globals: [{rva, name, type, value}, ...]` where
+    RVAs are hex strings relative to image base.
+    """
+    globals_data = None
+    # Autodump JSON path is per-build; try the standard locations.
+    try:
+        import json as _json
+        for p in (
+            r"C:\dumps\wow_globals_67186.json",
+            r"C:\dumps\wow_globals.json",
+        ):
+            if os.path.isfile(p):
+                with open(p, "r", encoding="utf-8") as fh:
+                    globals_data = _json.load(fh)
+                break
+    except Exception:
+        return 0
+    if not globals_data:
+        return 0
+
+    image_base = idaapi.get_imagebase() if hasattr(idaapi, "get_imagebase") else 0
+
+    items = []
+    if isinstance(globals_data, dict):
+        # autodump shape: top-level meta + named_globals list
+        items = globals_data.get("named_globals", []) or []
+    elif isinstance(globals_data, list):
+        items = globals_data
+
+    count = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not name:
+            continue
+
+        # RVA -> EA conversion
+        rva = item.get("rva") or item.get("offset")
+        ea = item.get("ea") or item.get("address")
+        if rva and not ea:
+            if isinstance(rva, str):
+                try:
+                    rva_int = int(rva, 16) if rva.startswith("0x") else int(rva)
+                except ValueError:
+                    continue
+            else:
+                rva_int = rva
+            ea = image_base + rva_int
+        if not ea:
+            continue
+        if isinstance(ea, str):
+            try:
+                ea = int(ea, 16) if ea.startswith("0x") else int(ea)
+            except ValueError:
+                continue
+
+        try:
+            existing = idaapi.get_name(ea) if hasattr(idaapi, "get_name") else None
+        except Exception:
+            existing = None
+        if existing == name:
+            continue
+        try:
+            if hasattr(idaapi, "set_name"):
+                if idaapi.set_name(ea, name, idaapi.SN_FORCE | idaapi.SN_NOWARN):
+                    count += 1
+                    modified_eas.add(ea)
+        except Exception:
+            continue
+
+    if count:
+        msg_info(f"  Phase 2: applied {count} global variable names")
+    return count
+
+
 def _apply_object_layout_types(db, modified_eas):
-    """Set first-parameter types on functions associated with known classes."""
+    """Set first-parameter types on functions associated with known classes.
+
+    Object Layout's data shape is a list of {class_name, vtable_ea, fields[]}.
+    Each field has an `accessors` list of function NAMES that access it. We
+    map accessors -> EAs via the `functions` table and set first-param type
+    to ClassName* on each.
+    """
     layouts = db.kv_get("object_layouts")
     if not layouts:
         return 0
@@ -475,45 +1709,41 @@ def _apply_object_layout_types(db, modified_eas):
         msg_warn("ida_typeinf not available — skipping object layout type application")
         return 0
 
-    count = 0
-
-    # layouts is expected to be a dict of class_name -> { "fields": [...], "methods": [...] }
-    # or a list of layout objects
-    if isinstance(layouts, list):
-        layout_list = layouts
-    elif isinstance(layouts, dict):
-        layout_list = list(layouts.values()) if not isinstance(
-            next(iter(layouts.values()), None), dict
-        ) else [{"class_name": k, **v} for k, v in layouts.items()]
-    else:
+    if isinstance(layouts, dict):
+        layouts = list(layouts.values())
+    if not isinstance(layouts, list):
         return 0
 
-    for layout in layout_list:
+    # Build a one-time name->ea map from the functions table to avoid 1 query
+    # per accessor. functions table has 130K+ rows so this is much cheaper than
+    # repeated SELECTs.
+    name_to_ea = {}
+    try:
+        for row in db.fetchall("SELECT name, ea FROM functions WHERE name IS NOT NULL"):
+            name_to_ea[row["name"]] = row["ea"]
+    except Exception:
+        pass
+
+    count = 0
+    for layout in layouts:
         if not isinstance(layout, dict):
             continue
-
         class_name = layout.get("class_name") or layout.get("name")
         if not class_name:
             continue
 
-        methods = layout.get("methods") or layout.get("functions") or []
-        for method_info in methods:
-            if not isinstance(method_info, dict):
-                continue
+        # Collect every accessor name across all fields, dedupe.
+        accessor_names = set()
+        for field in (layout.get("fields") or []):
+            if isinstance(field, dict):
+                for acc in (field.get("accessors") or []):
+                    if isinstance(acc, str) and acc:
+                        accessor_names.add(acc)
 
-            method_ea = method_info.get("ea") or method_info.get("address")
-            if not method_ea:
+        for acc_name in accessor_names:
+            method_ea = name_to_ea.get(acc_name)
+            if not method_ea or not _function_exists(method_ea):
                 continue
-            if isinstance(method_ea, str):
-                try:
-                    method_ea = int(method_ea, 16)
-                except ValueError:
-                    continue
-
-            if not _function_exists(method_ea):
-                continue
-
-            # Apply the class type as the first parameter (this pointer)
             if _try_set_first_param_type(method_ea, class_name):
                 modified_eas.add(method_ea)
                 count += 1
@@ -534,9 +1764,16 @@ def _try_set_first_param_type(ea, class_name):
     if not func:
         return False
 
-    # Get current type info
+    # Get current type info. The API moved between IDA versions:
+    #   8.x:  ida_typeinf.get_tinfo
+    #   9.x:  idaapi.get_tinfo  (and ida_nalt.get_tinfo)
     tinfo = ida_typeinf.tinfo_t()
-    if not ida_typeinf.get_tinfo(tinfo, ea):
+    _get_tinfo = (
+        getattr(ida_typeinf, "get_tinfo", None)
+        or getattr(idaapi, "get_tinfo", None)
+    )
+    has_existing = bool(_get_tinfo) and bool(_get_tinfo(tinfo, ea))
+    if not has_existing:
         # No existing type info — we can't reliably modify what isn't there.
         # Instead, add a comment noting the expected type.
         comment_text = f"this: {class_name}*"
@@ -751,8 +1988,11 @@ def _create_ida_enums_legacy(db):
 def _create_ida_enums_typeinf(db):
     """Create enums using the IDA 9.x ida_typeinf API.
 
-    In IDA 9, enums are type info objects created via enum_type_data_t
-    and set_numbered_type / set_named_type in the local type library.
+    IDA 9.x's text parser doesn't accept either `enum X : underlying { ... }`
+    (C++11 strongly-typed) OR plain `enum X { ... }` reliably for our inputs
+    — both report 'Syntax error near: enum'. We instead build the type via
+    `enum_type_data_t` directly and apply it via `tinfo_t.create_enum`, with
+    `bte` set to encode the underlying integer size that IDA expects.
     """
     recovered = _get_enum_defs(db)
     if not recovered:
@@ -760,13 +2000,38 @@ def _create_ida_enums_typeinf(db):
 
     til = ida_typeinf.get_idati()
     count = 0
+    failed = 0
+    # Instrumentation: where do the 391 enums actually go?
+    skip_no_name = 0
+    skip_no_values = 0
+    skip_existing = 0
+    skip_no_members = 0
+    fail_create = 0
+    fail_set_named = 0
+    fail_exception = 0
+
+    # bte byte encoding (from typeinf.hpp):
+    #   low 3 bits: BTE_SIZE_MASK — size code (0=undef, 1=byte, 2=word, 3=dword, 4=qword)
+    #   0x10:       BTE_ALWAYS    — must be set
+    #   0x20:       BTE_HEX       — display members as hex
+    BTE_ALWAYS = 0x10
+    BTE_HEX = 0x20
+
+    SIZE_TO_BTE = {
+        "uint8":  1, "int8":  1,
+        "uint16": 2, "int16": 2,
+        "uint32": 3, "int32": 3,
+        "uint64": 4, "int64": 4,
+    }
 
     for enum_def in recovered:
         if not isinstance(enum_def, dict):
+            skip_no_name += 1
             continue
 
         enum_name = enum_def.get("suggested_name")
         if not enum_name:
+            skip_no_name += 1
             continue
 
         safe_name = re.sub(r'[^A-Za-z0-9_]', '_', enum_name)
@@ -775,29 +2040,26 @@ def _create_ida_enums_typeinf(db):
 
         values = enum_def.get("values")
         if not values or not isinstance(values, list):
+            skip_no_values += 1
             continue
 
-        is_flags = enum_def.get("is_flags", False)
-
-        # Check if already exists in the type library
+        # Skip if the enum already exists in this IDB
         existing = ida_typeinf.tinfo_t()
         if existing.get_named_type(til, safe_name):
+            skip_existing += 1
             continue
 
-        # Build enum_type_data_t
-        etd = ida_typeinf.enum_type_data_t()
-        if is_flags:
-            # BTE_BITFIELD was removed in IDA 9.x
-            bte_bitfield = getattr(ida_typeinf, 'BTE_BITFIELD', None)
-            if bte_bitfield is not None:
-                etd.bte |= bte_bitfield
-            else:
-                # IDA 9.x: set hex representation for flag-style enums
-                try:
-                    etd.bte |= getattr(ida_typeinf, 'BTE_HEX', 0)
-                except AttributeError:
-                    pass
+        size_code = SIZE_TO_BTE.get(
+            (enum_def.get("underlying_type") or "uint32").lower(), 3
+        )
 
+        # Build enum_type_data_t directly
+        etd = ida_typeinf.enum_type_data_t()
+        etd.bte = BTE_ALWAYS | size_code
+        if enum_def.get("is_flags"):
+            etd.bte |= BTE_HEX
+
+        seen_member_names = set()
         members_added = 0
         for val_entry in values:
             if not isinstance(val_entry, dict):
@@ -805,32 +2067,70 @@ def _create_ida_enums_typeinf(db):
             val = val_entry.get("value")
             if val is None:
                 continue
-            vname = val_entry.get("name")
-            if not vname:
-                vname = f"VALUE_{val}" if val < 256 else f"VALUE_0x{val:X}"
-            member_name = f"{safe_name}_{vname}"
-            member_name = re.sub(r'[^A-Za-z0-9_]', '_', member_name)
+            vname = val_entry.get("name") or (
+                f"VALUE_{val}" if abs(val) < 256 else f"VALUE_0x{val:X}"
+            )
+            member_name = re.sub(r'[^A-Za-z0-9_]', '_', f"{safe_name}_{vname}")
+            if not member_name or member_name[0].isdigit():
+                member_name = "M_" + member_name
+            if member_name in seen_member_names:
+                member_name = f"{member_name}_{val:X}"
+                if member_name in seen_member_names:
+                    continue
+            seen_member_names.add(member_name)
 
             em = ida_typeinf.enum_member_t()
             em.name = member_name
-            em.value = val
+            em.value = val & 0xFFFFFFFFFFFFFFFF  # mask to 64-bit unsigned
             etd.push_back(em)
             members_added += 1
 
         if members_added == 0:
+            skip_no_members += 1
             continue
 
-        # Create tinfo_t from the enum data and register it
         tif = ida_typeinf.tinfo_t()
-        if tif.create_enum(etd):
-            rc = tif.set_named_type(til, safe_name, ida_typeinf.NTF_REPLACE)
-            if rc == 0 or rc == ida_typeinf.TERR_OK:
-                count += 1
-            else:
-                msg_warn(f"Failed to register enum type: {safe_name} (rc={rc})")
-        else:
-            msg_warn(f"Failed to create enum tinfo: {safe_name}")
+        try:
+            ok = tif.create_enum(etd)
+        except Exception as exc:
+            ok = False
+            fail_exception += 1
+            if fail_exception <= 3:
+                msg_warn(f"Enum create exception for {safe_name}: {exc}")
 
+        if not ok:
+            fail_create += 1
+            failed += 1
+            if fail_create <= 3:
+                msg_warn(f"create_enum returned False for {safe_name} "
+                         f"(bte=0x{etd.bte:02x}, members={members_added})")
+            continue
+
+        try:
+            rc = tif.set_named_type(til, safe_name, ida_typeinf.NTF_REPLACE)
+        except Exception as exc:
+            rc = -1
+            fail_exception += 1
+            if fail_exception <= 3:
+                msg_warn(f"set_named_type exception for {safe_name}: {exc}")
+        # set_named_type returns 0 / TERR_OK on success in IDA 9.x
+        ok_codes = (0, getattr(ida_typeinf, "TERR_OK", 0))
+        if rc in ok_codes:
+            count += 1
+        else:
+            fail_set_named += 1
+            failed += 1
+            if fail_set_named <= 3:
+                msg_warn(f"set_named_type failed for {safe_name} (rc={rc})")
+
+    msg_info(
+        f"  Enum creation breakdown: "
+        f"created={count}, skip_no_name={skip_no_name}, "
+        f"skip_no_values={skip_no_values}, skip_existing={skip_existing}, "
+        f"skip_no_members={skip_no_members}, "
+        f"fail_create={fail_create}, fail_set_named={fail_set_named}, "
+        f"fail_exception={fail_exception}"
+    )
     return count
 
 
@@ -842,17 +2142,135 @@ def _phase3_comment_enrichment(db, modified_eas):
     """Add repeatable comments from various analysis results.
 
     Sources:
+      - subsystem catalog:    "Subsystem: housing (conf 85%)"
+      - auth lifecycle:       "Phase: handshake / world / etc."
       - conformance scores:   Quality/fidelity rating per handler
       - taint_analysis:       Security warnings for unsafe flows
       - behavioral_specs:     Execution path summaries
+      - opcode handler xrefs: "Handler for CMSG_AUTH_SESSION (idx=0x123)"
     """
     count = 0
 
+    count += _comment_subsystem_tags(db, modified_eas)
+    count += _comment_auth_phases(db, modified_eas)
+    count += _comment_opcode_handler(db, modified_eas)
     count += _comment_conformance_scores(db, modified_eas)
     count += _comment_taint_warnings(db, modified_eas)
     count += _comment_behavioral_specs(db, modified_eas)
 
     msg_info(f"  Phase 3 (Comment Enrichment): {count} comments added")
+    return count
+
+
+def _comment_subsystem_tags(db, modified_eas):
+    """Add 'Subsystem: X (conf Y%)' comments using the Subsystem Catalog."""
+    cat = db.kv_get("subsystem_catalog")
+    if not cat or not isinstance(cat, dict):
+        return 0
+    by_function = cat.get("by_function") or {}
+    if not by_function:
+        return 0
+    count = 0
+    for ea_str_key, info in by_function.items():
+        try:
+            ea = int(ea_str_key) if isinstance(ea_str_key, (str, int)) else None
+        except (ValueError, TypeError):
+            continue
+        if ea is None or not _function_exists(ea):
+            continue
+        sub = info.get("subsystem") if isinstance(info, dict) else None
+        conf = info.get("confidence") if isinstance(info, dict) else None
+        if not sub:
+            continue
+        comment = f"[Subsystem: {sub}"
+        if conf:
+            try:
+                comment += f" ({int(float(conf) * 100)}%)"
+            except Exception:
+                pass
+        comment += "]"
+        existing = idaapi.get_cmt(ea, True) or ""
+        if "[Subsystem:" in existing:
+            continue
+        if existing:
+            comment = existing + "\n" + comment
+        if _try_set_comment(ea, comment, repeatable=True):
+            modified_eas.add(ea)
+            count += 1
+    if count:
+        msg_info(f"    +{count} subsystem tags")
+    return count
+
+
+def _comment_auth_phases(db, modified_eas):
+    """Add '[Phase: handshake]' style comments to opcode handlers."""
+    al = db.kv_get("auth_lifecycle")
+    if not al or not isinstance(al, dict):
+        return 0
+    phase_of_opcode = al.get("phase_of_opcode") or {}
+    if not phase_of_opcode:
+        return 0
+
+    # Need opcode->handler_ea mapping. Opcodes table stores tc_name + handler_ea
+    # but they are usually in disjoint rows. Build name->ea by iterating all
+    # named opcodes; for those with handler_ea we tag the EA, for those without
+    # we skip silently.
+    try:
+        opc_rows = db.fetchall(
+            "SELECT tc_name, handler_ea FROM opcodes "
+            "WHERE tc_name IS NOT NULL AND handler_ea IS NOT NULL"
+        )
+    except Exception:
+        opc_rows = []
+
+    count = 0
+    for r in opc_rows:
+        ea = r["handler_ea"]
+        opc = r["tc_name"]
+        phase = phase_of_opcode.get(opc)
+        if not phase or not _function_exists(ea):
+            continue
+        comment = f"[Phase: {phase}]"
+        existing = idaapi.get_cmt(ea, True) or ""
+        if "[Phase:" in existing:
+            continue
+        if existing:
+            comment = existing + "\n" + comment
+        if _try_set_comment(ea, comment, repeatable=True):
+            modified_eas.add(ea)
+            count += 1
+    if count:
+        msg_info(f"    +{count} auth-phase tags")
+    return count
+
+
+def _comment_opcode_handler(db, modified_eas):
+    """Mark every opcode-handler function with 'Handler for OPCODE_NAME'."""
+    try:
+        rows = db.fetchall(
+            "SELECT tc_name, handler_ea, direction, internal_index FROM opcodes "
+            "WHERE handler_ea IS NOT NULL"
+        )
+    except Exception:
+        return 0
+    count = 0
+    for r in rows:
+        ea = r["handler_ea"]
+        if not _function_exists(ea):
+            continue
+        opc = r["tc_name"] or f"opcode_0x{r['internal_index']:X}"
+        direction = r["direction"] or "?"
+        comment = f"[Handler: {opc} ({direction})]"
+        existing = idaapi.get_cmt(ea, True) or ""
+        if "[Handler:" in existing:
+            continue
+        if existing:
+            comment = existing + "\n" + comment
+        if _try_set_comment(ea, comment, repeatable=True):
+            modified_eas.add(ea)
+            count += 1
+    if count:
+        msg_info(f"    +{count} handler tags")
     return count
 
 
@@ -1002,16 +2420,29 @@ def _comment_taint_warnings(db, modified_eas):
 
 
 def _comment_behavioral_specs(db, modified_eas):
-    """Add execution path summary comments from behavioral specs."""
-    specs = db.kv_get("behavioral_specs")
-    if not specs:
+    """Add execution path summary comments from behavioral specs.
+
+    Source: per-handler `behavioral_spec:<name>` kv entries (written by
+    Execution Trace Simulation since the BS analyzer was merged into it).
+    The summary `behavioral_specs` key only has counts, not per-handler data.
+    """
+    spec_list = []
+    try:
+        rows = db.fetchall(
+            "SELECT key, value FROM kv_store WHERE key LIKE 'behavioral_spec:%'"
+        )
+        import json as _json
+        for r in rows:
+            try:
+                spec = _json.loads(r["value"]) if r["value"] else None
+                if isinstance(spec, dict):
+                    spec_list.append(spec)
+            except Exception:
+                continue
+    except Exception:
         return 0
 
-    if isinstance(specs, dict):
-        spec_list = specs.get("specs") or specs.get("handlers") or list(specs.values())
-    elif isinstance(specs, list):
-        spec_list = specs
-    else:
+    if not spec_list:
         return 0
 
     count = 0
@@ -1121,32 +2552,39 @@ def _phase4_redecompile_and_discover(db, modified_eas):
             if caller_func:
                 eas_to_decompile.add(caller_func.start_ea)
 
-    # Limit to avoid spending too long on re-decompilation
-    MAX_REDECOMPILE = 2000
-    if len(eas_to_decompile) > MAX_REDECOMPILE:
-        msg_info(f"  Phase 4: limiting re-decompilation to {MAX_REDECOMPILE} "
-                 f"of {len(eas_to_decompile)} affected functions")
-        eas_to_decompile = set(sorted(eas_to_decompile)[:MAX_REDECOMPILE])
+    # Resume across idat-crash by tracking which EAs we already re-decompiled.
+    # With the MAX_REDECOMPILE cap removed, this set can be 17K+ — without
+    # checkpointing, each idat crash forces a full restart and never finishes.
+    checkpoint = db.kv_get("idb_enrichment_phase4_checkpoint") or {}
+    processed_eas = set(checkpoint.get("processed_eas", []))
+    discovered = checkpoint.get("discovered", 0)
 
-    msg_info(f"  Phase 4: re-decompiling {len(eas_to_decompile)} functions...")
+    msg_info(f"  Phase 4: re-decompiling {len(eas_to_decompile)} functions"
+             + (f" (resuming, {len(processed_eas)} already done)" if processed_eas else ""))
 
-    discovered = 0
     decompile_failures = 0
+    todo = sorted(eas_to_decompile - processed_eas)
 
-    for ea in sorted(eas_to_decompile):
+    for idx, ea in enumerate(todo):
         pseudocode = get_decompiled_text(ea)
         if pseudocode is None:
             decompile_failures += 1
-            continue
+        else:
+            discovered += _discover_system_from_callees(db, ea, pseudocode)
+            discovered += _discover_handler_patterns(db, ea, pseudocode)
+            discovered += _discover_vtable_associations(db, ea, pseudocode)
+        processed_eas.add(ea)
 
-        # Discover system classification from callee names
-        discovered += _discover_system_from_callees(db, ea, pseudocode)
+        if (idx + 1) % 1000 == 0:
+            db.kv_set("idb_enrichment_phase4_checkpoint", {
+                "processed_eas": list(processed_eas),
+                "discovered": discovered,
+            })
+            db.commit()
 
-        # Discover new handler patterns from renamed callees
-        discovered += _discover_handler_patterns(db, ea, pseudocode)
-
-        # Discover vtable class associations
-        discovered += _discover_vtable_associations(db, ea, pseudocode)
+    # Phase complete — clear checkpoint
+    db.kv_set("idb_enrichment_phase4_checkpoint", None)
+    db.commit()
 
     if decompile_failures > 0:
         msg_info(f"  Phase 4: {decompile_failures} decompilation failures")

@@ -197,14 +197,26 @@ def analyze_return_semantics(session) -> int:
     candidates = _gather_candidate_functions(session)
     msg_info(f"Found {len(candidates)} candidate functions with return values")
 
-    function_semantics = []
-    unchecked_returns = []
-    error_chains_raw = defaultdict(list)  # callee_ea -> list of caller info
-    result_code_dict = {}
+    # Resume from checkpoint if a prior run was killed mid-loop. Each idat
+    # crash drops 1 EA into the skiplist; without resume, every retry restarts
+    # from candidate 0 and never finishes.
+    checkpoint = db.kv_get("return_value_semantics_checkpoint") or {}
+    processed_eas = set(checkpoint.get("processed_eas", []))
+    function_semantics = checkpoint.get("function_semantics", [])
+    unchecked_returns = checkpoint.get("unchecked_returns", [])
+    result_code_dict = checkpoint.get("result_code_dict", {})
+    error_chains_raw = defaultdict(list)
+    for k, v in (checkpoint.get("error_chains_raw") or {}).items():
+        error_chains_raw[int(k)] = v
+    if processed_eas:
+        msg_info(f"Resuming from checkpoint: {len(processed_eas)} candidates "
+                 f"already processed, {len(function_semantics)} have semantics")
 
     for idx, cand in enumerate(candidates):
         ea = cand["ea"]
         name = cand["name"]
+        if ea in processed_eas:
+            continue
 
         # Phase 1: Return value pattern detection
         ret_info = _analyze_return_patterns(ea, name)
@@ -262,9 +274,22 @@ def analyze_return_semantics(session) -> int:
             if code_map:
                 result_code_dict[name] = code_map
 
+        processed_eas.add(ea)
+
         if (idx + 1) % 100 == 0:
             msg_info(f"  Processed {idx + 1}/{len(candidates)} functions, "
                      f"{len(function_semantics)} with return semantics...")
+
+        # Checkpoint every 500 candidates so a crash doesn't lose all work
+        if (idx + 1) % 500 == 0:
+            db.kv_set("return_value_semantics_checkpoint", {
+                "processed_eas": list(processed_eas),
+                "function_semantics": function_semantics,
+                "unchecked_returns": unchecked_returns,
+                "result_code_dict": result_code_dict,
+                "error_chains_raw": {str(k): v for k, v in error_chains_raw.items()},
+            })
+            db.commit()
 
     # Phase 5: Build error propagation chains
     error_chains = _build_error_propagation_chains(
@@ -289,6 +314,8 @@ def analyze_return_semantics(session) -> int:
     }
 
     db.kv_set("return_value_semantics", results)
+    # Clear checkpoint — analysis completed successfully
+    db.kv_set("return_value_semantics_checkpoint", None)
     db.commit()
 
     msg_info(f"Return Value Semantics: completed in {results['analysis_time_sec']}s")
@@ -376,18 +403,13 @@ def _gather_candidate_functions(session):
     except Exception:
         pass
 
-    # 3. Named functions with xrefs (broad sweep, capped)
+    # 3. Named functions with xrefs (broad sweep)
     count_from_sweep = 0
-    max_sweep = 3000
     for seg_ea in idautils.Segments():
-        if count_from_sweep >= max_sweep:
-            break
         for func_ea in idautils.Functions(
             idaapi.getseg(seg_ea).start_ea,
             idaapi.getseg(seg_ea).end_ea
         ):
-            if count_from_sweep >= max_sweep:
-                break
             name = ida_name.get_name(func_ea)
             if not name or name.startswith("sub_") or name.startswith("j_"):
                 continue
@@ -1362,6 +1384,55 @@ def _compare_with_tc(session, function_semantics):
     return mismatches
 
 
+# TC source caching + identifier index. Walking + reading the src/server tree
+# per function is O(N × files); naïve per-call substring match across all files
+# is O(N × files × content_size) — still pushes past the iter timeout for 13k+
+# candidates. We pre-extract every C identifier from each file once, then look
+# each function up in a {ident: [files]} dict for O(1) candidate retrieval.
+_TC_SRC_CACHE = {}     # tc_dir -> {fpath: content}
+_TC_IDENT_INDEX = {}   # tc_dir -> {identifier: set(fpath)}
+_IDENT_RE = None
+
+
+def _load_tc_src_cache(tc_dir):
+    cached = _TC_SRC_CACHE.get(tc_dir)
+    if cached is not None:
+        return cached
+    global _IDENT_RE
+    if _IDENT_RE is None:
+        _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]+")
+    import os
+    files_loaded = {}
+    ident_index = {}
+    search_dirs = [
+        os.path.join(tc_dir, "src", "server", "game"),
+        os.path.join(tc_dir, "src", "server", "scripts"),
+        os.path.join(tc_dir, "src", "common"),
+    ]
+    for sdir in search_dirs:
+        if not os.path.isdir(sdir):
+            continue
+        for root, _, files in os.walk(sdir):
+            for fname in files:
+                if not fname.endswith((".cpp", ".h")):
+                    continue
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                except OSError:
+                    continue
+                files_loaded[fpath] = content
+                # Index every identifier seen in this file (deduped)
+                for ident in set(_IDENT_RE.findall(content)):
+                    ident_index.setdefault(ident, set()).add(fpath)
+    _TC_SRC_CACHE[tc_dir] = files_loaded
+    _TC_IDENT_INDEX[tc_dir] = ident_index
+    msg_info(f"  TC source cache: loaded {len(files_loaded)} .cpp/.h files, "
+             f"{len(ident_index)} unique identifiers indexed")
+    return files_loaded
+
+
 def _find_tc_function_info(tc_dir, func_name):
     """Search TrinityCore source for a function and extract its return info.
 
@@ -1370,8 +1441,6 @@ def _find_tc_function_info(tc_dir, func_name):
         callers_ignore_count, checks_null.
         Returns None if not found.
     """
-    import os
-
     # Determine search name -- strip common prefixes/namespaces
     search_name = func_name
     for prefix in ("WowClientDB2_", "WowClientDB_", "CGUnit_C__", "CGPlayer_C__",
@@ -1380,32 +1449,30 @@ def _find_tc_function_info(tc_dir, func_name):
             search_name = search_name[len(prefix):]
             break
 
-    # Replace __ with :: for C++ namespace
+    # Trigger cache + index build on first call
+    cache = _load_tc_src_cache(tc_dir)
+    ident_index = _TC_IDENT_INDEX.get(tc_dir, {})
+
+    # O(1) lookup: which files contain `search_name` as a token?
+    candidate_paths = ident_index.get(search_name, set())
+    # The C++-style name only matters if it's an actual token like Class::Method —
+    # which our identifier regex wouldn't index as a single token. The substring
+    # check below covers it.
     search_name_cpp = search_name.replace("__", "::")
 
-    # Search in common TC source directories
-    search_dirs = [
-        os.path.join(tc_dir, "src", "server", "game"),
-        os.path.join(tc_dir, "src", "server", "scripts"),
-        os.path.join(tc_dir, "src", "common"),
+    found_files = [
+        (fpath, cache[fpath])
+        for fpath in candidate_paths
+        if search_name_cpp == search_name or search_name_cpp in cache[fpath]
     ]
-
-    found_files = []
-    for sdir in search_dirs:
-        if not os.path.isdir(sdir):
-            continue
-        for root, dirs, files in os.walk(sdir):
-            for fname in files:
-                if not fname.endswith((".cpp", ".h")):
-                    continue
-                fpath = os.path.join(root, fname)
-                try:
-                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
-                    if search_name in content or search_name_cpp in content:
-                        found_files.append((fpath, content))
-                except OSError:
-                    continue
+    # Fallback: if the C++ namespace form wasn't satisfied above, do a narrow
+    # substring scan over only the candidate files (still tiny vs. all files).
+    if not found_files and search_name_cpp != search_name:
+        found_files = [
+            (fpath, cache[fpath])
+            for fpath in candidate_paths
+            if search_name_cpp in cache[fpath]
+        ]
 
     if not found_files:
         return None

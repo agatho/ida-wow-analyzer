@@ -63,9 +63,6 @@ MAX_CONSTANTS_PER_FUNC = 128
 # Maximum number of string refs to collect per function
 MAX_STRINGS_PER_FUNC = 64
 
-# Maximum decompilation attempts for handler-only structural fingerprints
-MAX_DECOMP_ATTEMPTS = 2000
-
 # Mnemonic categories for instruction class histograms.  Instructions are
 # grouped into broad categories so that functionally equivalent code compiled
 # with slightly different register allocation still fingerprints the same.
@@ -1086,9 +1083,6 @@ def _cluster_by_decompilation(handler_eas, fingerprints):
     success_count = 0
 
     for ea in handler_eas:
-        if attempt_count >= MAX_DECOMP_ATTEMPTS:
-            break
-
         attempt_count += 1
         pseudocode = get_decompiled_text(ea)
         if not pseudocode:

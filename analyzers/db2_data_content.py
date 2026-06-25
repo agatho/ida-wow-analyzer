@@ -1289,7 +1289,6 @@ def _scan_source_for_id_refs(tc_source_dir, all_table_data, tc_stores,
     )
 
     scanned = 0
-    max_scan = 500  # limit for performance
 
     for scan_dir in scan_dirs:
         if not os.path.isdir(scan_dir):
@@ -1298,8 +1297,6 @@ def _scan_source_for_id_refs(tc_source_dir, all_table_data, tc_stores,
             for fname in files:
                 if not fname.endswith((".cpp", ".h")):
                     continue
-                if scanned >= max_scan:
-                    return
 
                 filepath = os.path.join(root, fname)
                 try:

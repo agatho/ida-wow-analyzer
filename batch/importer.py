@@ -73,6 +73,34 @@ def run_import(session, dumps_dir=None):
         msg_error("Cannot determine build number. Set build_number in Settings "
                   "or ensure wow_manifest_*.json exists in the dumps directory.")
         return {}
+
+    # ── Idempotency check: if imports are already current for this build/dir,
+    # skip the multi-minute re-import entirely. Saves 20-30 min per iteration
+    # in the overnight supervisor loop. Can be forced via env var.
+    force_reimport = os.environ.get("TC_FORCE_REIMPORT", "").strip() not in ("", "0", "false", "False")
+    if not force_reimport:
+        try:
+            last = db.kv_get("last_import")
+        except Exception:
+            last = None
+        if last and last.get("build") == build and last.get("dumps_dir") == dumps_dir:
+            # Compare source-file mtimes against the stored import timestamp
+            last_ts = float(last.get("timestamp") or 0)
+            latest_src_mtime = 0.0
+            try:
+                for entry in os.listdir(dumps_dir):
+                    if entry.startswith(f"wow_") and entry.endswith(f"_{build}.json"):
+                        p = os.path.join(dumps_dir, entry)
+                        m = os.path.getmtime(p)
+                        if m > latest_src_mtime:
+                            latest_src_mtime = m
+            except Exception:
+                latest_src_mtime = 0.0
+            if last_ts > 0 and latest_src_mtime > 0 and latest_src_mtime < last_ts:
+                msg_info(f"Imports already current (last_import at {time.ctime(last_ts)}); "
+                         f"newest source mtime {time.ctime(latest_src_mtime)} — SKIPPING re-import")
+                return last.get("results", {})
+
     msg_info(f"Importing from {dumps_dir} (build {build})")
     start = time.time()
 

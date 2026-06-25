@@ -3,7 +3,44 @@ TC WoW Analyzer — Analyzer Orchestration
 Runs all analysis passes in dependency order.
 """
 
-from tc_wow_analyzer.core.utils import msg_info, msg_error
+import json
+import os
+import time
+import traceback
+
+from tc_wow_analyzer.core.utils import msg_info, msg_error, _init_log_file, _write_log
+
+
+def _gc_resource_snapshot():
+    """Best-effort memory + handle snapshot for resource tracking."""
+    snap = {"ts": time.time()}
+    try:
+        import psutil, os as _os
+        p = psutil.Process(_os.getpid())
+        mi = p.memory_info()
+        snap["rss_mb"] = round(mi.rss / (1024 * 1024), 1)
+        snap["vms_mb"] = round(mi.vms / (1024 * 1024), 1)
+        snap["num_threads"] = p.num_threads()
+        try:
+            snap["num_handles"] = p.num_handles()  # Windows only
+        except AttributeError:
+            pass
+    except Exception:
+        # psutil not installed — fallback to resource.getrusage on unix, skip otherwise
+        pass
+    return snap
+
+
+def _report_path():
+    """Path for the structured run report JSON, next to the IDB."""
+    try:
+        import ida_loader
+        idb = ida_loader.get_path(ida_loader.PATH_TYPE_IDB)
+        if idb:
+            return os.path.splitext(idb)[0] + ".tc_wow_analyzer.run_report.json"
+    except Exception:
+        pass
+    return os.path.join(os.path.dirname(__file__), "..", "..", "run_report.json")
 
 
 def run_all_analyzers(session):
@@ -85,7 +122,9 @@ def run_all_analyzers(session):
     analyzers = [
         ("Lua API", _run_lua_api),
         ("VTables", _run_vtables),
+        ("RTTI to SQL", _run_rtti_to_sql),
         ("DB2 Metadata", _run_db2_metadata),
+        ("DB2 LoadInfo Codegen", _run_db2_loadinfo_codegen),
         ("Opcode Dispatcher", _run_opcode_dispatcher),
         ("JAM Recovery", _run_jam_recovery),
         ("Update Fields", _run_update_fields),
@@ -106,8 +145,10 @@ def run_all_analyzers(session):
         ("Response Reconstruction", _run_response_reconstruction),
         # Behavioral analysis
         ("Taint Analysis", _run_taint_analysis),
-        ("Behavioral Spec", _run_behavioral_spec),
+        # Behavioral Spec merged into Execution Trace Simulation (which writes
+        # `behavioral_spec:*` keys for backward compat with consumers).
         ("Protocol Sequencing", _run_protocol_sequencing),
+        ("Auth Lifecycle", _run_auth_lifecycle),
         ("Build Delta", _run_build_delta),
         ("Callee Contracts", _run_callee_contracts),
         # Synthesis & generation
@@ -115,7 +156,20 @@ def run_all_analyzers(session):
         ("Object Lifecycle", _run_object_lifecycle),
         ("Lua Contracts", _run_lua_contracts),
         # Intelligence & enrichment
+        ("Subsystem Catalog", _run_subsystem_catalog),
         ("IDB Enrichment", _run_idb_enrichment),
+        ("JAM Metadata Apply", _run_jam_metadata_apply),
+        ("JAM Caller Index", _run_jam_caller_index),
+        ("JAM Type Discovery", _run_jam_type_discovery),
+        ("TC Opcode Xref", _run_tc_opcode_xref),
+        ("Topic Deep Extractor", _run_topic_deep_extractor),
+        ("Lua API Tag", _run_lua_api_tag),
+        ("Hash Resolution", _run_hash_resolution),
+        ("CVar Callback Rename", _run_cvar_callback_rename),
+        ("Hash Function Naming", _run_hash_func_naming),
+        ("CVar Consumer Tag", _run_cvar_consumer_tag),
+        ("Cfunc Pattern Tag", _run_cfunc_pattern_tag),
+        ("Typename Apply", _run_typename_apply),
         ("String Intelligence", _run_string_intelligence),
         ("Cross-Analyzer Synthesis", _run_cross_synthesis),
         # Data & verification
@@ -155,19 +209,121 @@ def run_all_analyzers(session):
     ]
 
     total = 0
-    for name, func in analyzers:
-        msg_info(f"=== Running analyzer: {name} ===")
+    details = []      # structured per-analyzer records
+    run_start = time.time()
+    start_snap = _gc_resource_snapshot()
+
+    # Allow resume: skip analyzers listed in TC_SKIP_ANALYZERS env var (comma-separated).
+    skip_set = {s.strip() for s in os.environ.get("TC_SKIP_ANALYZERS", "").split(",") if s.strip()}
+    # Allow optional filter: only-run analyzers in TC_ONLY_ANALYZERS env var.
+    only_set = {s.strip() for s in os.environ.get("TC_ONLY_ANALYZERS", "").split(",") if s.strip()}
+
+    for idx, (name, func) in enumerate(analyzers):
+        if only_set and name not in only_set:
+            details.append({"analyzer": name, "status": "SKIPPED_FILTER", "order": idx})
+            continue
+        if name in skip_set:
+            msg_info(f"=== [{idx+1}/{len(analyzers)}] {name}: SKIPPED (TC_SKIP_ANALYZERS) ===")
+            details.append({"analyzer": name, "status": "SKIPPED_ENV", "order": idx})
+            results[name] = 0
+            continue
+
+        msg_info(f"=== [{idx+1}/{len(analyzers)}] Running analyzer: {name} ===")
+        pre = _gc_resource_snapshot()
+        t0 = time.time()
+        record = {"analyzer": name, "order": idx, "start": pre.get("ts"),
+                  "pre_mem_mb": pre.get("rss_mb")}
+
         try:
             count = func(session)
+            elapsed = time.time() - t0
+            post = _gc_resource_snapshot()
             results[name] = count
-            total += count
-            msg_info(f"  -> {name}: {count} items processed")
+            total += (count if isinstance(count, int) and count >= 0 else 0)
+            record.update({
+                "status": "OK",
+                "items": count,
+                "elapsed_sec": round(elapsed, 2),
+                "post_mem_mb": post.get("rss_mb"),
+                "mem_delta_mb": (round(post["rss_mb"] - pre["rss_mb"], 1)
+                                  if pre.get("rss_mb") and post.get("rss_mb") else None),
+            })
+            msg_info(f"  -> {name}: {count} items processed ({elapsed:.1f}s, "
+                     f"mem {record.get('pre_mem_mb','?')}->{record.get('post_mem_mb','?')} MB)")
         except Exception as e:
-            msg_error(f"  -> {name} FAILED: {e}")
+            elapsed = time.time() - t0
+            post = _gc_resource_snapshot()
+            tb = traceback.format_exc()
+            record.update({
+                "status": "FAILED",
+                "error_type": type(e).__name__,
+                "error_msg": str(e)[:500],
+                "traceback": tb,
+                "elapsed_sec": round(elapsed, 2),
+                "post_mem_mb": post.get("rss_mb"),
+            })
             results[name] = -1
+            # Full traceback to the log file (single line -> multi-line appended)
+            msg_error(f"  -> {name} FAILED after {elapsed:.1f}s: "
+                      f"{type(e).__name__}: {e}")
+            for tb_line in tb.rstrip().splitlines():
+                _write_log("ERROR", f"    {tb_line}")
 
+        details.append(record)
+
+        # Write a checkpoint after every analyzer so a later crash still
+        # produces a partial report we can diagnose.
+        try:
+            partial = {
+                "run_start": run_start,
+                "elapsed_sec": round(time.time() - run_start, 1),
+                "complete": False,
+                "analyzers_run": idx + 1,
+                "analyzers_total": len(analyzers),
+                "results": results,
+                "details": details,
+                "start_mem_mb": start_snap.get("rss_mb"),
+            }
+            with open(_report_path(), "w", encoding="utf-8") as f:
+                json.dump(partial, f, indent=2, default=str)
+        except Exception:
+            pass  # checkpoint failures must never break the run
+
+    # Final report
+    elapsed_total = time.time() - run_start
+    end_snap = _gc_resource_snapshot()
+    summary_by_status = {}
+    for d in details:
+        s = d.get("status", "?")
+        summary_by_status[s] = summary_by_status.get(s, 0) + 1
+
+    final_report = {
+        "run_start": run_start,
+        "elapsed_sec": round(elapsed_total, 1),
+        "complete": True,
+        "analyzers_run": len(details),
+        "analyzers_total": len(analyzers),
+        "summary_by_status": summary_by_status,
+        "results": results,
+        "details": details,
+        "start_mem_mb": start_snap.get("rss_mb"),
+        "end_mem_mb": end_snap.get("rss_mb"),
+    }
+    try:
+        with open(_report_path(), "w", encoding="utf-8") as f:
+            json.dump(final_report, f, indent=2, default=str)
+        msg_info(f"Run report written: {_report_path()}")
+    except Exception as e:
+        msg_error(f"Could not write run report: {e}")
+
+    # Human-readable summary
     msg_info(f"=== Analysis complete: {total} total items across "
-             f"{len(analyzers)} analyzers ===")
+             f"{len(analyzers)} analyzers in {elapsed_total:.1f}s ===")
+    msg_info(f"  Status: {summary_by_status}")
+    failed = [d["analyzer"] for d in details if d.get("status") == "FAILED"]
+    if failed:
+        msg_error(f"  Failed analyzers ({len(failed)}): {', '.join(failed)}")
+        msg_error(f"  Tracebacks in: {_report_path()}  (and .tc_wow_analyzer.log)")
     return results
 
 
@@ -181,9 +337,19 @@ def _run_vtables(session):
     return analyze_vtables(session)
 
 
+def _run_rtti_to_sql(session):
+    from tc_wow_analyzer.analyzers.rtti_to_sql import analyze_rtti_to_sql
+    return analyze_rtti_to_sql(session)
+
+
 def _run_db2_metadata(session):
     from tc_wow_analyzer.analyzers.db2_metadata import analyze_db2_metadata
     return analyze_db2_metadata(session)
+
+
+def _run_db2_loadinfo_codegen(session):
+    from tc_wow_analyzer.analyzers.db2_loadinfo_codegen import analyze_db2_loadinfo_codegen
+    return analyze_db2_loadinfo_codegen(session)
 
 
 def _run_opcode_dispatcher(session):
@@ -285,6 +451,16 @@ def _run_protocol_sequencing(session):
     return recover_protocol_sequence(session)
 
 
+def _run_auth_lifecycle(session):
+    from tc_wow_analyzer.analyzers.auth_lifecycle import analyze_auth_lifecycle
+    return analyze_auth_lifecycle(session)
+
+
+def _run_subsystem_catalog(session):
+    from tc_wow_analyzer.analyzers.subsystem_catalog import build_subsystem_catalog
+    return build_subsystem_catalog(session)
+
+
 def _run_build_delta(session):
     from tc_wow_analyzer.analyzers.build_delta import analyze_build_delta
     return analyze_build_delta(session, None)
@@ -317,6 +493,66 @@ def _run_lua_contracts(session):
 def _run_idb_enrichment(session):
     from tc_wow_analyzer.analyzers.idb_enrichment import enrich_idb
     return enrich_idb(session)
+
+
+def _run_jam_metadata_apply(session):
+    from tc_wow_analyzer.analyzers.jam_metadata_apply import analyze_jam_metadata_apply
+    return analyze_jam_metadata_apply(session)
+
+
+def _run_jam_caller_index(session):
+    from tc_wow_analyzer.analyzers.jam_caller_index import analyze_jam_caller_index
+    return analyze_jam_caller_index(session)
+
+
+def _run_lua_api_tag(session):
+    from tc_wow_analyzer.analyzers.lua_api_tag import analyze_lua_api_tag
+    return analyze_lua_api_tag(session)
+
+
+def _run_jam_type_discovery(session):
+    from tc_wow_analyzer.analyzers.jam_type_discovery import analyze_jam_type_discovery
+    return analyze_jam_type_discovery(session)
+
+
+def _run_tc_opcode_xref(session):
+    from tc_wow_analyzer.analyzers.tc_opcode_xref import analyze_tc_opcode_xref
+    return analyze_tc_opcode_xref(session)
+
+
+def _run_topic_deep_extractor(session):
+    from tc_wow_analyzer.analyzers.topic_deep_extractor import analyze_topic_deep_extractor
+    return analyze_topic_deep_extractor(session)
+
+
+def _run_hash_resolution(session):
+    from tc_wow_analyzer.analyzers.hash_resolution import analyze_hash_resolution
+    return analyze_hash_resolution(session)
+
+
+def _run_cvar_callback_rename(session):
+    from tc_wow_analyzer.analyzers.cvar_callback_rename import analyze_cvar_callback_rename
+    return analyze_cvar_callback_rename(session)
+
+
+def _run_hash_func_naming(session):
+    from tc_wow_analyzer.analyzers.hash_func_naming import analyze_hash_func_naming
+    return analyze_hash_func_naming(session)
+
+
+def _run_cvar_consumer_tag(session):
+    from tc_wow_analyzer.analyzers.cvar_consumer_tag import analyze_cvar_consumer_tag
+    return analyze_cvar_consumer_tag(session)
+
+
+def _run_cfunc_pattern_tag(session):
+    from tc_wow_analyzer.analyzers.cfunc_pattern_tag import analyze_cfunc_pattern_tag
+    return analyze_cfunc_pattern_tag(session)
+
+
+def _run_typename_apply(session):
+    from tc_wow_analyzer.analyzers.typename_apply import analyze_typename_apply
+    return analyze_typename_apply(session)
 
 
 def _run_string_intelligence(session):
