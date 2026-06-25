@@ -68,6 +68,35 @@ JAM_TO_WRITE_METHOD = {
 }
 
 
+_PACKET_FIELDS_ENSURED = {"done": False}
+
+
+def _ensure_packet_fields(session):
+    """Lazily populate jam_types.fields_json from the binary's packet_structures
+    if no JAM type has field data yet, so codegen emits non-empty structs.
+
+    wire_format_recovery (pseudocode tracing) recovers ~0 on this client because
+    JAM serialization is reflection-based (0/466 serializers have a traceable
+    Read/Write call). packet_structures is the usable field source. Runs at most
+    once per session; guarded so it can never break codegen."""
+    if _PACKET_FIELDS_ENSURED["done"]:
+        return
+    _PACKET_FIELDS_ENSURED["done"] = True
+    db = getattr(session, "db", None)
+    if db is None:
+        return
+    try:
+        row = db.fetchone(
+            "SELECT COUNT(*) AS c FROM jam_types "
+            "WHERE fields_json IS NOT NULL AND fields_json NOT IN ('', '[]')")
+        if row and row["c"] > 0:
+            return  # already populated (by a prior import or wire_format_recovery)
+        from tc_wow_analyzer.codegen.packet_field_import import import_packet_structures
+        import_packet_structures(session)
+    except Exception as e:
+        msg_warn(f"packet field auto-import skipped: {e}")
+
+
 def generate_packet_struct(session, jam_name, direction="CMSG"):
     """Generate a TrinityCore packet struct definition.
 
@@ -85,6 +114,7 @@ def generate_packet_struct(session, jam_name, direction="CMSG"):
         };
     """
     db = session.db
+    _ensure_packet_fields(session)
     row = db.fetchone("SELECT * FROM jam_types WHERE name = ?", (jam_name,))
     if not row:
         return f"// JAM type '{jam_name}' not found in knowledge DB\n"
@@ -116,8 +146,18 @@ def generate_packet_struct(session, jam_name, direction="CMSG"):
     if fields:
         lines.append("")
         for field in fields:
-            cpp_type = JAM_TO_CPP_TYPE.get(field["type"], "uint32")
+            ftype = field.get("type", "uint32")
             fname = field.get("name", f"Field{field.get('index', 0)}")
+            if ftype == "flush":
+                continue  # bit-alignment marker, not a member
+            if ftype == "struct":
+                sname = field.get("struct_name")
+                if sname:
+                    lines.append(f"    {sname} {fname};  // nested JAM struct")
+                else:
+                    lines.append(f"    uint32 {fname} = 0;  // TODO: nested struct (type unresolved)")
+                continue
+            cpp_type = JAM_TO_CPP_TYPE.get(ftype, "uint32")
             default = _get_default(cpp_type)
             lines.append(f"    {cpp_type} {fname}{default};")
 
@@ -128,6 +168,7 @@ def generate_packet_struct(session, jam_name, direction="CMSG"):
 def generate_read_method(session, jam_name):
     """Generate the Read() method for a CMSG packet."""
     db = session.db
+    _ensure_packet_fields(session)
     row = db.fetchone("SELECT * FROM jam_types WHERE name = ?", (jam_name,))
     if not row or not row["fields_json"]:
         return f"// No field data for {jam_name}\n"
@@ -142,13 +183,15 @@ def generate_read_method(session, jam_name):
         ftype = field["type"]
         fname = field.get("name", f"Field{field.get('index', 0)}")
 
-        if ftype == "bits":
+        if ftype in ("bits", "bit"):
             bit_count = field.get("bit_count", 1)
             lines.append(f"    _worldPacket.ReadBits({fname}, {bit_count});")
-        elif ftype == "PackedGuid":
+        elif ftype in ("PackedGuid", "packed_guid"):
             lines.append(f"    _worldPacket.ReadPackedGuid({fname});")
         elif ftype == "flush":
             lines.append(f"    _worldPacket.ResetBitPos();")
+        elif ftype == "struct":
+            lines.append(f"    // TODO: read nested JAM struct {fname}")
         else:
             lines.append(f"    _worldPacket >> {fname};")
 
@@ -159,6 +202,7 @@ def generate_read_method(session, jam_name):
 def generate_write_method(session, jam_name):
     """Generate the Write() method for an SMSG packet."""
     db = session.db
+    _ensure_packet_fields(session)
     row = db.fetchone("SELECT * FROM jam_types WHERE name = ?", (jam_name,))
     if not row or not row["fields_json"]:
         return f"// No field data for {jam_name}\n"
@@ -173,13 +217,15 @@ def generate_write_method(session, jam_name):
         ftype = field["type"]
         fname = field.get("name", f"Field{field.get('index', 0)}")
 
-        if ftype == "bits":
+        if ftype in ("bits", "bit"):
             bit_count = field.get("bit_count", 1)
             lines.append(f"    _worldPacket.WriteBits({fname}, {bit_count});")
-        elif ftype == "PackedGuid":
+        elif ftype in ("PackedGuid", "packed_guid"):
             lines.append(f"    _worldPacket.WritePackedGuid({fname});")
         elif ftype == "flush":
             lines.append(f"    _worldPacket.FlushBits();")
+        elif ftype == "struct":
+            lines.append(f"    // TODO: write nested JAM struct {fname}")
         else:
             lines.append(f"    _worldPacket << {fname};")
 
