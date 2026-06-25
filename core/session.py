@@ -155,6 +155,8 @@ class PluginSession:
         actions = [
             ("tc_wow:show_dashboard", "Show Dashboard",
              "Ctrl+Shift+W", self._action_show_dashboard),
+            ("tc_wow:analyzer_index", "Analyzer Index",
+             "Ctrl+Shift+I", self._action_analyzer_index),
             ("tc_wow:settings", "Settings...",
              "", self._action_settings),
             ("tc_wow:run_tasks", "Run Tasks...",
@@ -213,6 +215,16 @@ class PluginSession:
             show_dashboard(self)
         except Exception as e:
             msg_error(f"Dashboard error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _action_analyzer_index(self):
+        """Show the Analyzer Index — all 70 analyzers, status, and kv output."""
+        try:
+            from tc_wow_analyzer.ui.analyzer_index import show_analyzer_index
+            show_analyzer_index(self)
+        except Exception as e:
+            msg_error(f"Analyzer Index error: {e}")
             import traceback
             traceback.print_exc()
 

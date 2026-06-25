@@ -114,6 +114,7 @@ class TcWowAnalyzerPlugmod(idaapi.plugmod_t):
         menu_items = [
             # ── Main ──
             ("tc_wow:show_dashboard",    "Edit/TC WoW/Show Dashboard"),
+            ("tc_wow:analyzer_index",    "Edit/TC WoW/Analyzer Index"),
             ("tc_wow:run_tasks",         "Edit/TC WoW/Run Tasks..."),
             ("tc_wow:settings",          "Edit/TC WoW/Settings..."),
             # ── Analysis submenu ──

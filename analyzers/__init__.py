@@ -247,6 +247,17 @@ def run_all_analyzers(session):
         ("Sniff Conformance Loop", _run_sniff_conformance_loop),
     ]
 
+    # Reconcile the registry (single source of truth for the UI/Analyzer Index)
+    # against this run loop so an added analyzer can't silently desync the two.
+    try:
+        from tc_wow_analyzer.analyzers.registry import verify as _verify_registry
+        _miss, _extra = _verify_registry([n for n, _ in analyzers])
+        if _miss or _extra:
+            msg_error(f"Analyzer registry drift — in run loop but not registry: "
+                      f"{_miss}; in registry but not run loop: {_extra}")
+    except Exception:
+        pass
+
     total = 0
     details = []      # structured per-analyzer records
     run_start = time.time()
