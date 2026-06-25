@@ -47,7 +47,6 @@ If you must work from here, first read the two files above.
 - **LLM**: client supports a `claude-cli` provider (subscription via subprocess) + LM Studio/Ollama aliases.
 
 ## Git hygiene
-Last commit `296d723` (2026-03-09). As of 2026-06-25 there are **uncommitted modifications** in
-`analyzers/__init__.py`, `cross_build_migration.py`, `cvar_extraction.py`, `db2_data_content.py`,
-`execution_trace_sim.py`, `function_similarity.py`, `idb_enrichment.py`, `return_value_semantics.py`,
-`update_fields.py`, `batch/headless.py`. Commit before the 12.0.7 migration churn.
+Working tree clean on `master` as of 2026-06-25. Convention is direct-to-master (single-user, edited
+in place — branching this IDA-loaded install dir just creates friction). The 04-26/04-28 analyzer work
+was committed in `d9c76b4`; this file in `213b509`.

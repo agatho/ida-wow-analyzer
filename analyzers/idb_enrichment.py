@@ -63,7 +63,8 @@ except ImportError:
         _ENUM_VIA_TYPEINF = False
 
 from tc_wow_analyzer.core.utils import (
-    msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text
+    msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text,
+    autodump_candidates,
 )
 
 
@@ -1003,7 +1004,7 @@ def _create_vtable_structs(db):
 
     # Build a unified {class_name: vtable_rva_int} map from all sources.
     classes_dict = {}
-    for p in (r"C:\dumps\wow_rtti_67186.json", r"C:\dumps\wow_rtti.json"):
+    for p in autodump_candidates("wow_rtti"):
         if os.path.isfile(p):
             try:
                 with open(p, "r", encoding="utf-8") as fh:
@@ -1025,7 +1026,7 @@ def _create_vtable_structs(db):
                 pass
             break
 
-    for p in (r"C:\dumps\wow_ctor_dtor_67186.json", r"C:\dumps\wow_ctor_dtor.json"):
+    for p in autodump_candidates("wow_ctor_dtor"):
         if os.path.isfile(p):
             try:
                 with open(p, "r", encoding="utf-8") as fh:
@@ -1054,7 +1055,7 @@ def _create_vtable_structs(db):
     # Add anonymous vtables (vtables found in binary that don't link to a class
     # name in the RTTI). They still get a struct synthesized so indirect calls
     # through them resolve to typed slot accesses.
-    for p in (r"C:\dumps\wow_rtti_67186.json", r"C:\dumps\wow_rtti.json"):
+    for p in autodump_candidates("wow_rtti"):
         if os.path.isfile(p):
             try:
                 with open(p, "r", encoding="utf-8") as fh:
@@ -1085,10 +1086,7 @@ def _create_vtable_structs(db):
 
     # Optional named method lookup
     method_names_by_class = {}
-    methods_paths = [
-        r"C:\dumps\wow_vtable_methods_67186.json",
-        r"C:\dumps\wow_vtable_methods.json",
-    ]
+    methods_paths = autodump_candidates("wow_vtable_methods")
     for p in methods_paths:
         if not os.path.isfile(p):
             continue
@@ -1270,11 +1268,9 @@ def _create_packet_structs_from_autodump_json(db):
     if not _HAS_TYPEINF:
         return 0
 
-    candidate_paths = [
-        r"C:\dumps\wow_packet_structures_67186.json",
-        r"C:\dumps_66838\wow_packet_structures_66838.json",
-        r"C:\dumps_66198\wow_packet_structures_66198.json",
-    ]
+    # Current-build first, then archived builds (67186/66838/66198). The 67186
+    # autodump's packet list regressed to empty, so the archive fallback matters.
+    candidate_paths = autodump_candidates("wow_packet_structures")
     packets = None
     src_path = None
     for p in candidate_paths:
@@ -1625,10 +1621,7 @@ def _apply_global_names(db, modified_eas):
     # Autodump JSON path is per-build; try the standard locations.
     try:
         import json as _json
-        for p in (
-            r"C:\dumps\wow_globals_67186.json",
-            r"C:\dumps\wow_globals.json",
-        ):
+        for p in autodump_candidates("wow_globals"):
             if os.path.isfile(p):
                 with open(p, "r", encoding="utf-8") as fh:
                     globals_data = _json.load(fh)

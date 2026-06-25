@@ -188,8 +188,23 @@ def _ensure_skiplist_loaded():
             if stored_fp == _binary_fingerprint:
                 _decompile_skiplist = set(data.get("addresses", []))
             else:
-                # Different build — discard old skip list
-                msg("Skip list from different build — resetting")
+                # Different build — EAs have shifted so the old set can't be
+                # reused directly, BUT each entry cost a full idat hard-crash to
+                # discover and INTERR-prone functions are ~stable across builds.
+                # PRESERVE the list for later correlation-based translation
+                # (old->new via correlation_result.json) instead of discarding
+                # the single most expensive-to-rebuild asset at migration time.
+                try:
+                    import shutil
+                    prev = _skiplist_path + ".prevbuild.json"
+                    shutil.copyfile(_skiplist_path, prev)
+                    msg_warn(
+                        f"Skip list from a different build preserved to "
+                        f"{os.path.basename(prev)} ({len(data.get('addresses', []))} "
+                        f"entries) — translate via correlation_result old->new before "
+                        f"reuse; starting empty for this build")
+                except Exception:
+                    msg("Skip list from different build — resetting")
                 _decompile_skiplist = set()
         except Exception:
             _decompile_skiplist = set()
@@ -293,6 +308,76 @@ def set_default_db(db):
     """Set the module-level DB used by get_decompiled_text() when no db is passed."""
     global _default_db
     _default_db = db
+
+
+# ── Build-resolved input paths ────────────────────────────────────
+# Several analyzers historically hardcoded `c:/dumps/<name>_67186.json`, which
+# silently no-ops on a new build. These helpers resolve the active build so the
+# 67186 -> 12.0.7 (68235) migration picks up the right files.
+
+_DUMPS_DIR = r"C:\dumps"
+_current_build = None
+
+
+def set_build_number(bn):
+    """Record the active WoW build so input-path helpers resolve the right files.
+    Called by PluginSession.initialize() once the IDB/config is loaded."""
+    global _current_build
+    try:
+        _current_build = int(bn) if bn else None
+    except (TypeError, ValueError):
+        _current_build = None
+
+
+def current_build():
+    """Active WoW build number, or None. Falls back to the config singleton."""
+    if _current_build:
+        return _current_build
+    try:
+        from tc_wow_analyzer.core.config import cfg
+        bn = cfg.build_number
+        return int(bn) if bn else None
+    except Exception:
+        return None
+
+
+def dumps_build_path(stem, build=None, ext="json"):
+    """`c:\\dumps\\<stem>_<build>.<ext>` for the active build (NO archive fallback).
+
+    For build-specific offline artifacts (hash resolutions, candidate corpora)
+    that MUST be regenerated per build — falling back to an old build would apply
+    wrong addresses. If the build is unknown, returns the unsuffixed name."""
+    b = build if build is not None else current_build()
+    if b:
+        return os.path.join(_DUMPS_DIR, f"{stem}_{b}.{ext}")
+    return os.path.join(_DUMPS_DIR, f"{stem}.{ext}")
+
+
+def autodump_candidates(stem, archive_builds=(67186, 66838, 66198), ext="json"):
+    """Ordered candidate paths for an AutoDump artifact: current-build file first,
+    then the unsuffixed name, then archived prior builds (`c:\\dumps_<b>\\`).
+
+    For schema-stable inputs (rtti/ctor/vtable/globals/packets) where an archive
+    is an acceptable fallback when the current-build dump isn't present yet."""
+    cands = []
+    b = current_build()
+    if b:
+        cands.append(os.path.join(_DUMPS_DIR, f"{stem}_{b}.{ext}"))
+    cands.append(os.path.join(_DUMPS_DIR, f"{stem}.{ext}"))
+    for ab in archive_builds:
+        cands.append(os.path.join(f"{_DUMPS_DIR}_{ab}", f"{stem}_{ab}.{ext}"))
+    return cands
+
+
+def first_existing(paths):
+    """Return the first path in *paths* that exists on disk, or None."""
+    for p in paths:
+        try:
+            if p and os.path.isfile(p):
+                return p
+        except Exception:
+            pass
+    return None
 
 
 def safe_decompile(ea):

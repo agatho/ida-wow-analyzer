@@ -39,12 +39,14 @@ import ida_name
 import idaapi
 import idc
 
-from tc_wow_analyzer.core.utils import msg_info, msg_warn
+from tc_wow_analyzer.core.utils import msg_info, msg_warn, dumps_build_path
 from tc_wow_analyzer.analyzers.idb_enrichment import (
     _try_set_comment, _try_rename, _safe_struct_name,
 )
 
 
+# Build-resolved at call time (see analyze_hash_resolution). This default is a
+# fallback only; the offline corpus MUST be regenerated per build.
 RESOLUTION_JSON = r"c:/dumps/hash_resolution_67186.json"
 
 
@@ -155,6 +157,7 @@ def analyze_hash_resolution(session):
     if db is None:
         msg_warn("hash_resolution: no DB")
         return 0
+    RESOLUTION_JSON = dumps_build_path("hash_resolution")  # build-resolved
     if not os.path.isfile(RESOLUTION_JSON):
         msg_warn(f"hash_resolution: {RESOLUTION_JSON} not found "
                  "— run scripts/hash_brute.py first")

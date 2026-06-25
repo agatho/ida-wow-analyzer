@@ -43,6 +43,45 @@ def _report_path():
     return os.path.join(os.path.dirname(__file__), "..", "..", "run_report.json")
 
 
+def _progress_path():
+    """Path for the tail-able per-analyzer progress feed (headless live status)."""
+    try:
+        import ida_loader
+        idb = ida_loader.get_path(ida_loader.PATH_TYPE_IDB)
+        if idb:
+            return os.path.splitext(idb)[0] + ".tc_wow_analyzer.run_report.progress.jsonl"
+    except Exception:
+        pass
+    return os.path.join(os.path.dirname(__file__), "..", "..", "run_report.progress.jsonl")
+
+
+def _record_yield_and_regression(db, build, name, count, elapsed, run_id):
+    """Record this analyzer's item yield and flag soft regressions vs the prior build.
+
+    "Produced 5000 last build, 0 now" (a struct/pattern move) otherwise looks
+    identical to status=OK and is the dominant new-build failure mode. Guarded —
+    must never break the run."""
+    if db is None or not build:
+        return
+    try:
+        items = count if isinstance(count, int) and count >= 0 else 0
+        prev = db.get_prev_yield(name, build)
+        if prev is not None and prev >= 20:
+            if items == 0:
+                db.record_failure(build, "soft_zero", name, error_type="SoftZero",
+                                  error_msg=f"produced 0 items; prior build produced {prev}",
+                                  run_id=run_id)
+            elif items < prev * 0.5:
+                db.record_failure(build, "regression", name, error_type="YieldDrop",
+                                  error_msg=f"produced {items}; prior build produced {prev} (drop >50%)",
+                                  run_id=run_id)
+        db.record_yield(build, name, items, status="OK",
+                        elapsed_sec=round(elapsed, 1), run_id=run_id)
+        db.commit()
+    except Exception:
+        pass
+
+
 def run_all_analyzers(session):
     """Run all analyzers in dependency order.
 
@@ -218,6 +257,39 @@ def run_all_analyzers(session):
     # Allow optional filter: only-run analyzers in TC_ONLY_ANALYZERS env var.
     only_set = {s.strip() for s in os.environ.get("TC_ONLY_ANALYZERS", "").split(",") if s.strip()}
 
+    # ── Live-status + durable-failure wiring (all guarded — must never break a run) ──
+    try:
+        from tc_wow_analyzer.core.activity import ActivityManager
+        _amgr = ActivityManager.get()
+    except Exception:
+        _amgr = None
+    _db = getattr(session, "db", None)
+    try:
+        _build = int(session.cfg.build_number) if session and session.cfg else 0
+    except Exception:
+        _build = 0
+    _run_id = str(int(run_start))
+    _prog_path = _progress_path()
+    _ran = 0  # count of analyzers that actually execute (not filter/env-skipped)
+    _to_run = sum(1 for (n, _f) in analyzers
+                  if (not only_set or n in only_set) and n not in skip_set)
+    if _amgr:
+        try:
+            _amgr.extraction_start(_to_run or len(analyzers))
+        except Exception:
+            pass
+    try:
+        open(_prog_path, "w").close()  # truncate the progress feed at run start
+    except Exception:
+        pass
+
+    def _emit_progress(rec):
+        try:
+            with open(_prog_path, "a", encoding="utf-8") as pf:
+                pf.write(json.dumps(rec, default=str) + "\n")
+        except Exception:
+            pass
+
     for idx, (name, func) in enumerate(analyzers):
         if only_set and name not in only_set:
             details.append({"analyzer": name, "status": "SKIPPED_FILTER", "order": idx})
@@ -228,6 +300,12 @@ def run_all_analyzers(session):
             results[name] = 0
             continue
 
+        _ran += 1
+        if _amgr:
+            try:
+                _amgr.extraction_step(_ran, name)
+            except Exception:
+                pass
         msg_info(f"=== [{idx+1}/{len(analyzers)}] Running analyzer: {name} ===")
         pre = _gc_resource_snapshot()
         t0 = time.time()
@@ -250,6 +328,18 @@ def run_all_analyzers(session):
             })
             msg_info(f"  -> {name}: {count} items processed ({elapsed:.1f}s, "
                      f"mem {record.get('pre_mem_mb','?')}->{record.get('post_mem_mb','?')} MB)")
+            if _amgr:
+                try:
+                    _amgr.extraction_done(name, "OK",
+                                          count if isinstance(count, int) else -1,
+                                          round(elapsed, 1))
+                except Exception:
+                    pass
+            _record_yield_and_regression(_db, _build, name, count, elapsed, _run_id)
+            _emit_progress({"ts": time.time(), "idx": _ran, "total": _to_run,
+                            "name": name, "status": "OK",
+                            "items": count if isinstance(count, int) else None,
+                            "elapsed": round(elapsed, 1)})
         except Exception as e:
             elapsed = time.time() - t0
             post = _gc_resource_snapshot()
@@ -268,6 +358,22 @@ def run_all_analyzers(session):
                       f"{type(e).__name__}: {e}")
             for tb_line in tb.rstrip().splitlines():
                 _write_log("ERROR", f"    {tb_line}")
+            if _amgr:
+                try:
+                    _amgr.extraction_done(name, "FAILED", -1, round(elapsed, 1))
+                except Exception:
+                    pass
+            if _db is not None:
+                _db.record_failure(_build, "analyzer_failed", name,
+                                   error_type=type(e).__name__, error_msg=str(e),
+                                   traceback=tb, run_id=_run_id)
+                try:
+                    _db.commit()
+                except Exception:
+                    pass
+            _emit_progress({"ts": time.time(), "idx": _ran, "total": _to_run,
+                            "name": name, "status": "FAILED",
+                            "error": type(e).__name__, "elapsed": round(elapsed, 1)})
 
         details.append(record)
 
@@ -324,6 +430,23 @@ def run_all_analyzers(session):
     if failed:
         msg_error(f"  Failed analyzers ({len(failed)}): {', '.join(failed)}")
         msg_error(f"  Tracebacks in: {_report_path()}  (and .tc_wow_analyzer.log)")
+
+    # Close out live status + reconcile the durable failure ledger.
+    if _amgr:
+        try:
+            _amgr.extraction_end()
+        except Exception:
+            pass
+    if _db is not None:
+        try:
+            # analyzers that were failing for this build but succeeded now -> resolved
+            _db.resolve_failures(_build, "analyzer_failed", set(failed))
+            _db.commit()
+        except Exception:
+            pass
+    _emit_progress({"ts": time.time(), "event": "complete", "ran": _ran,
+                    "total": _to_run, "failed": failed,
+                    "summary": summary_by_status})
     return results
 
 

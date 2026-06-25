@@ -31,12 +31,13 @@ import ida_name
 import idaapi
 import idautils
 
-from tc_wow_analyzer.core.utils import msg_info, msg_warn
+from tc_wow_analyzer.core.utils import msg_info, msg_warn, dumps_build_path
 from tc_wow_analyzer.analyzers.idb_enrichment import (
     _try_set_comment, _safe_struct_name,
 )
 
 
+# Build-resolved at call time (see analyze_typename_apply); default fallback only.
 INVENTORY = r"c:/dumps/typename_inventory_67186.json"
 
 
@@ -92,6 +93,7 @@ def analyze_typename_apply(session):
     if db is None:
         msg_warn("typename_apply: no DB")
         return 0
+    INVENTORY = dumps_build_path("typename_inventory")  # build-resolved
     if not os.path.isfile(INVENTORY):
         msg_warn(f"typename_apply: {INVENTORY} not found")
         return 0

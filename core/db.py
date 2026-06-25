@@ -10,7 +10,7 @@ import json
 import time
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 -- Schema version tracking
@@ -179,6 +179,53 @@ CREATE TABLE IF NOT EXISTS kv_store (
     value TEXT,
     updated_at REAL
 );
+
+-- Persistent, cross-run, cross-build failure ledger.
+-- Survives runs (run_report.json is overwritten each run); accumulates every
+-- pipeline failure so the next build/update can learn from it. Deduped on
+-- (build, kind, subject) — re-seeing a failure bumps seen_count + last_seen.
+CREATE TABLE IF NOT EXISTS failure_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    build INTEGER,
+    kind TEXT,            -- analyzer_failed/hexrays_interr/idat_crash/soft_zero/regression/import_failed/oversize/py_exception
+    subject TEXT,         -- analyzer name, function name/ea-hex, source file, etc.
+    ea INTEGER,           -- optional address
+    error_type TEXT,
+    error_msg TEXT,
+    traceback TEXT,
+    run_id TEXT,
+    first_seen REAL,
+    last_seen REAL,
+    seen_count INTEGER DEFAULT 1,
+    resolved INTEGER DEFAULT 0,
+    UNIQUE(build, kind, subject)
+);
+CREATE INDEX IF NOT EXISTS idx_failure_kind ON failure_ledger(kind);
+CREATE INDEX IF NOT EXISTS idx_failure_build ON failure_ledger(build);
+CREATE INDEX IF NOT EXISTS idx_failure_open ON failure_ledger(resolved);
+
+-- Per-build per-analyzer yield — lets us catch "produced 5000 last build, 0 now"
+-- soft regressions that otherwise masquerade as status=OK.
+CREATE TABLE IF NOT EXISTS analyzer_yield (
+    build INTEGER,
+    analyzer TEXT,
+    items INTEGER,
+    status TEXT,
+    elapsed_sec REAL,
+    run_id TEXT,
+    ts REAL,
+    PRIMARY KEY (build, analyzer)
+);
+CREATE INDEX IF NOT EXISTS idx_yield_analyzer ON analyzer_yield(analyzer);
+
+-- ── Cross-analyzer join indexes (added v2) ───────────────────────
+CREATE INDEX IF NOT EXISTS idx_strings_value ON strings(value);
+CREATE INDEX IF NOT EXISTS idx_jam_serializer ON jam_types(serializer_ea);
+CREATE INDEX IF NOT EXISTS idx_jam_deserializer ON jam_types(deserializer_ea);
+CREATE INDEX IF NOT EXISTS idx_opcodes_jam_type ON opcodes(jam_type);
+CREATE INDEX IF NOT EXISTS idx_opcodes_wire ON opcodes(wire_opcode);
+CREATE INDEX IF NOT EXISTS idx_annotations_type ON annotations(ann_type);
+CREATE INDEX IF NOT EXISTS idx_annotations_source ON annotations(source);
 """
 
 
@@ -398,6 +445,92 @@ class KnowledgeDB:
             except (json.JSONDecodeError, TypeError):
                 return row["value"]
         return default
+
+    # ─── Failure Ledger ───────────────────────────────────────────
+
+    def record_failure(self, build, kind, subject, ea=None, error_type=None,
+                       error_msg=None, traceback=None, run_id=None):
+        """Record (or re-touch) a pipeline failure. Deduped on (build,kind,subject):
+        a re-seen failure bumps seen_count + last_seen and refreshes the message,
+        preserving first_seen. Returns silently on any error — must never break a run."""
+        try:
+            now = time.time()
+            if error_msg:
+                error_msg = str(error_msg)[:1000]
+            if traceback:
+                traceback = str(traceback)[:8000]
+            self.execute("""
+                INSERT INTO failure_ledger
+                    (build, kind, subject, ea, error_type, error_msg, traceback,
+                     run_id, first_seen, last_seen, seen_count, resolved)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
+                ON CONFLICT(build, kind, subject) DO UPDATE SET
+                    ea = COALESCE(excluded.ea, ea),
+                    error_type = COALESCE(excluded.error_type, error_type),
+                    error_msg = COALESCE(excluded.error_msg, error_msg),
+                    traceback = COALESCE(excluded.traceback, traceback),
+                    run_id = excluded.run_id,
+                    last_seen = excluded.last_seen,
+                    seen_count = seen_count + 1,
+                    resolved = 0
+            """, (build, kind, str(subject), ea, error_type, error_msg,
+                  traceback, run_id, now, now))
+        except Exception:
+            pass
+
+    def resolve_failures(self, build, kind, keep_subjects):
+        """Mark failures of (build,kind) NOT in keep_subjects as resolved — i.e. they
+        no longer occurred this run. keep_subjects is the set still failing."""
+        try:
+            rows = self.fetchall(
+                "SELECT subject FROM failure_ledger WHERE build=? AND kind=? AND resolved=0",
+                (build, kind))
+            for r in rows:
+                if r["subject"] not in keep_subjects:
+                    self.execute(
+                        "UPDATE failure_ledger SET resolved=1 WHERE build=? AND kind=? AND subject=?",
+                        (build, kind, r["subject"]))
+        except Exception:
+            pass
+
+    def get_failures(self, build=None, only_open=True):
+        try:
+            sql = "SELECT * FROM failure_ledger"
+            cond, params = [], []
+            if build is not None:
+                cond.append("build = ?"); params.append(build)
+            if only_open:
+                cond.append("resolved = 0")
+            if cond:
+                sql += " WHERE " + " AND ".join(cond)
+            sql += " ORDER BY seen_count DESC, last_seen DESC"
+            return self.fetchall(sql, tuple(params))
+        except Exception:
+            return []
+
+    def record_yield(self, build, analyzer, items, status="OK",
+                     elapsed_sec=None, run_id=None):
+        """Upsert the latest per-(build,analyzer) item yield for regression detection."""
+        try:
+            self.execute("""
+                INSERT INTO analyzer_yield (build, analyzer, items, status, elapsed_sec, run_id, ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(build, analyzer) DO UPDATE SET
+                    items = excluded.items, status = excluded.status,
+                    elapsed_sec = excluded.elapsed_sec, run_id = excluded.run_id, ts = excluded.ts
+            """, (build, analyzer, items, status, elapsed_sec, run_id, time.time()))
+        except Exception:
+            pass
+
+    def get_prev_yield(self, analyzer, current_build):
+        """Most recent prior-build item count for an analyzer, or None."""
+        try:
+            row = self.fetchone(
+                "SELECT items FROM analyzer_yield WHERE analyzer=? AND build < ? "
+                "ORDER BY build DESC LIMIT 1", (analyzer, current_build))
+            return row["items"] if row else None
+        except Exception:
+            return None
 
     # ─── Statistics ───────────────────────────────────────────────
 

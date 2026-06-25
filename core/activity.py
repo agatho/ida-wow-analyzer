@@ -42,6 +42,18 @@ class ActivityManager:
         self._batch_tasks = []
         self._batch_completed = []
 
+        # Structured extraction tracking (the 70-analyzer pipeline). Distinct
+        # from the generic batch fields so the status header can render a
+        # per-analyzer table + a persistent FAILED list that survives the
+        # bounded log deque.
+        self._ext_active = False
+        self._ext_total = 0
+        self._ext_index = 0
+        self._ext_current = ""
+        self._ext_started = 0.0
+        self._ext_done = []      # list of dicts: {name,status,items,elapsed}
+        self._ext_failed = []    # names of FAILED/soft-failed analyzers (persistent)
+
         # Stats
         self._total_events = 0
         self._errors = 0
@@ -132,6 +144,77 @@ class ActivityManager:
             self._batch_completed = []
         self._notify()
 
+    # ─── Structured extraction tracking ───────────────────────────
+
+    def extraction_start(self, total):
+        with self._lock:
+            self._ext_active = True
+            self._ext_total = total
+            self._ext_index = 0
+            self._ext_current = ""
+            self._ext_started = time.time()
+            self._ext_done = []
+            self._ext_failed = []
+            self._log.append(ActivityEntry(
+                "task", "extraction", f"Extraction started — {total} analyzers"))
+            self._total_events += 1
+        self._notify()
+
+    def extraction_step(self, index, name):
+        with self._lock:
+            self._ext_index = index
+            self._ext_current = name
+        self._notify()
+
+    def extraction_done(self, name, status, items=-1, elapsed=0.0):
+        with self._lock:
+            self._ext_done.append({"name": name, "status": status,
+                                   "items": items, "elapsed": elapsed})
+            if status not in ("OK", "SKIPPED", "SKIPPED_ENV", "SKIPPED_FILTER"):
+                if name not in self._ext_failed:
+                    self._ext_failed.append(name)
+            self._ext_current = ""
+        self._notify()
+
+    def extraction_end(self):
+        with self._lock:
+            done = len(self._ext_done)
+            failed = len(self._ext_failed)
+            self._log.append(ActivityEntry(
+                "task", "extraction",
+                f"Extraction finished — {done}/{self._ext_total} ran, {failed} failed"))
+            self._total_events += 1
+            self._ext_active = False
+            self._ext_current = ""
+        self._notify()
+
+    def _extraction_lines(self):
+        """Status lines for the structured extraction block (caller holds _lock)."""
+        lines = []
+        elapsed = time.time() - self._ext_started if self._ext_started else 0
+        ok = sum(1 for d in self._ext_done if d["status"] == "OK")
+        fail = len(self._ext_failed)
+        skip = sum(1 for d in self._ext_done if str(d["status"]).startswith("SKIP"))
+        items = sum(d["items"] for d in self._ext_done if isinstance(d["items"], int) and d["items"] > 0)
+        head = f"EXTRACTION: [{self._ext_index}/{self._ext_total}]"
+        if self._ext_current:
+            head += f"  Running: {self._ext_current}"
+        if elapsed > 1:
+            head += f"  ({elapsed:.0f}s)"
+        lines.append(head)
+        lines.append(f"  {ok} OK · {fail} FAILED · {skip} skipped · {items} items")
+        if self._ext_failed:
+            lines.append("  FAILED: " + ", ".join(self._ext_failed[:12])
+                         + (" …" if fail > 12 else ""))
+        # recent completed (last 8)
+        for d in self._ext_done[-8:]:
+            mark = "ok " if d["status"] == "OK" else ("!! " if d["status"] not in
+                   ("SKIPPED", "SKIPPED_ENV", "SKIPPED_FILTER") else ".. ")
+            cnt = str(d["items"]) if isinstance(d["items"], int) and d["items"] >= 0 else d["status"]
+            lines.append(f"  {mark}{d['name'][:30]:30s} {cnt:>8}  {d['elapsed']:.1f}s")
+        lines.append("=" * 70)
+        return lines
+
     def get_log(self, count=100):
         with self._lock:
             entries = list(self._log)
@@ -141,6 +224,11 @@ class ActivityManager:
         """Return formatted lines for the activity viewer."""
         lines = []
         with self._lock:
+            # Structured extraction header (the 70-analyzer pipeline)
+            if self._ext_active:
+                lines.extend(self._extraction_lines())
+                lines.append("")
+
             # Header: current state
             if self._batch_name:
                 done = len(self._batch_completed)
@@ -162,7 +250,7 @@ class ActivityManager:
                 if self._task_detail:
                     lines.append(f"  {self._task_detail}")
                 lines.append("")
-            elif not self._batch_name:
+            elif not self._batch_name and not self._ext_active:
                 lines.append("IDLE")
                 lines.append("")
 

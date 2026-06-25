@@ -32,12 +32,13 @@ from collections import defaultdict
 import ida_funcs
 import idaapi
 
-from tc_wow_analyzer.core.utils import msg_info, msg_warn
+from tc_wow_analyzer.core.utils import msg_info, msg_warn, dumps_build_path
 from tc_wow_analyzer.analyzers.idb_enrichment import (
     _try_set_comment, _try_rename, _safe_struct_name,
 )
 
 
+# Build-resolved at call time (see analyze_cvar_consumer_tag); default fallback only.
 CALLSITE_JSON = r"c:/dumps/cvar_callsite_map_67186.json"
 
 
@@ -46,6 +47,7 @@ def analyze_cvar_consumer_tag(session):
     if db is None:
         msg_warn("cvar_consumer_tag: no DB")
         return 0
+    CALLSITE_JSON = dumps_build_path("cvar_callsite_map")  # build-resolved
     if not os.path.isfile(CALLSITE_JSON):
         msg_warn(f"cvar_consumer_tag: {CALLSITE_JSON} not found "
                  "— run scripts/mine_cvar_callsites.py first")

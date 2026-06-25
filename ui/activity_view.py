@@ -33,8 +33,10 @@ def _timer_tick():
     try:
         mgr = ActivityManager.get()
 
-        # Skip refresh if nothing changed
-        if mgr._total_events == _last_event_count and not mgr._current_task:
+        # Skip refresh if nothing changed — but keep refreshing while a task or
+        # the analyzer extraction is active so the elapsed clock keeps ticking.
+        if (mgr._total_events == _last_event_count and not mgr._current_task
+                and not getattr(mgr, "_ext_active", False)):
             return 1000
 
         _last_event_count = mgr._total_events

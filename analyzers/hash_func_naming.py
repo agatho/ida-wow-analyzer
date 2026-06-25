@@ -43,12 +43,13 @@ import ida_funcs
 import ida_name
 import idaapi
 
-from tc_wow_analyzer.core.utils import msg_info, msg_warn
+from tc_wow_analyzer.core.utils import msg_info, msg_warn, dumps_build_path
 from tc_wow_analyzer.analyzers.idb_enrichment import (
     _try_set_comment, _try_rename,
 )
 
 
+# Build-resolved at call time (see analyze_hash_func_naming); default fallback only.
 CANDIDATES_JSON = r"c:/dumps/fnv_candidates_67186.json"
 
 
@@ -86,6 +87,7 @@ def analyze_hash_func_naming(session):
     if db is None:
         msg_warn("hash_func_naming: no DB")
         return 0
+    CANDIDATES_JSON = dumps_build_path("fnv_candidates")  # build-resolved
     if not os.path.isfile(CANDIDATES_JSON):
         msg_warn(f"hash_func_naming: {CANDIDATES_JSON} not found "
                  "— run scripts/find_fnv_functions.py first")

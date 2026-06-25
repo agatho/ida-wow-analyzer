@@ -172,6 +172,24 @@ def _table_count(conn, table):
         return 0
 
 
+def _read_run_report():
+    """Read the authoritative per-analyzer run_report.json next to the IDB, or None."""
+    try:
+        import ida_loader
+        import os
+        import json
+        idb = ida_loader.get_path(ida_loader.PATH_TYPE_IDB)
+        if not idb:
+            return None
+        p = os.path.splitext(idb)[0] + ".tc_wow_analyzer.run_report.json"
+        if not os.path.isfile(p):
+            return None
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def _get_all_stats(conn):
     """Return a dict of every table count plus derived metrics."""
     tables = [
@@ -186,6 +204,19 @@ def _get_all_stats(conn):
     # KV-derived counters
     kv_count = _table_count(conn, "kv_store")
     stats["kv_entries"] = kv_count
+
+    # Analyzer run status from the authoritative run_report.json
+    try:
+        rep = _read_run_report()
+        if rep:
+            summ = rep.get("summary_by_status", {}) or {}
+            stats["analyzers_total"] = rep.get("analyzers_total", 0)
+            stats["analyzers_ran"] = rep.get("analyzers_run", 0)
+            stats["analyzers_ok"] = summ.get("OK", 0)
+            stats["analyzers_failed"] = summ.get("FAILED", 0)
+            stats["run_complete"] = bool(rep.get("complete"))
+    except Exception:
+        pass
 
     # Opcode direction breakdown
     try:
@@ -600,14 +631,24 @@ registerRoute('#overview', async (container) => {
     }
     html += '</div>';
 
-    // Coverage meter (KV entries as proxy for how many analyzers ran)
-    const analyzerCount = stats.kv_entries || 0;
-    const estimatedTotal = 40;  // rough estimate of all analyzers
-    const pct = Math.min(100, Math.round((analyzerCount / estimatedTotal) * 100));
+    // Coverage meter — driven by the authoritative run_report.json when present
+    // (analyzers that completed OK / total), falling back to kv proxy otherwise.
+    let pct, coverLabel;
+    if (stats.analyzers_total) {
+        const ok = stats.analyzers_ok || 0;
+        const failed = stats.analyzers_failed || 0;
+        pct = Math.min(100, Math.round((ok / stats.analyzers_total) * 100));
+        coverLabel = `${ok}/${stats.analyzers_total} analyzers OK`
+                   + (failed ? ` · ${failed} FAILED` : '')
+                   + (stats.run_complete === false ? ' · run PARTIAL' : '');
+    } else {
+        pct = 0;
+        coverLabel = 'no run_report yet — run the analyzer pipeline';
+    }
     const meterColor = pct >= 75 ? 'var(--green)' : pct >= 40 ? 'var(--yellow)' : 'var(--red)';
     html += '<div class="meter-wrap">';
     html += `<h2>Analysis Coverage</h2>`;
-    html += `<div style="font-size:.85rem;color:var(--text-sub);margin-bottom:6px">${analyzerCount} analyzer results stored (est. ${estimatedTotal} total)</div>`;
+    html += `<div style="font-size:.85rem;color:var(--text-sub);margin-bottom:6px">${coverLabel}</div>`;
     html += `<div class="meter"><div class="fill" style="width:${pct}%;background:${meterColor}"></div><div class="label-over">${pct}%</div></div>`;
     html += '</div>';
 

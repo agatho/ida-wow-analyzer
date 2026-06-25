@@ -39,6 +39,14 @@ class PluginSession:
         # may have been created before the IDB was fully loaded).
         self.cfg._load()
 
+        # Record the active build so utils' input-path helpers resolve the
+        # correct `_<build>.json` files (de-hardcodes the old _67186 constants).
+        try:
+            from tc_wow_analyzer.core.utils import set_build_number
+            set_build_number(self.cfg.build_number)
+        except Exception:
+            pass
+
         # Always register UI actions first so menus work even if DB fails
         self._register_actions()
 

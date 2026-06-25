@@ -45,12 +45,13 @@ import ida_name
 import idaapi
 import idc
 
-from tc_wow_analyzer.core.utils import msg_info, msg_warn
+from tc_wow_analyzer.core.utils import msg_info, msg_warn, dumps_build_path
 from tc_wow_analyzer.analyzers.idb_enrichment import (
     _try_set_comment, _try_rename, _safe_struct_name,
 )
 
 
+# Build-resolved at call time (see analyze_cvar_callback_rename); default fallback only.
 RESOLUTION_JSON = r"c:/dumps/hash_resolution_67186.json"
 CALLBACK_OFFSET = 0x60
 NAME_PTR_OFFSET = 0x08
@@ -87,6 +88,9 @@ def analyze_cvar_callback_rename(session):
     if db is None:
         msg_warn("cvar_callback_rename: no DB")
         return 0
+    RESOLUTION_JSON = dumps_build_path("hash_resolution")  # build-resolved
+    # Resolve image base from the loaded IDB, not the 67186-hardcoded constant.
+    image_base = getattr(session.cfg, "image_base", 0) or IMAGE_BASE
     if not os.path.isfile(RESOLUTION_JSON):
         msg_warn(f"cvar_callback_rename: {RESOLUTION_JSON} not found")
         return 0
@@ -164,7 +168,7 @@ def analyze_cvar_callback_rename(session):
         try:
             db.upsert_function(
                 ea=cb_ea,
-                rva=cb_ea - IMAGE_BASE,
+                rva=cb_ea - image_base,
                 system="cvar",
                 subsystem="cvar_callback",
                 confidence=80,
