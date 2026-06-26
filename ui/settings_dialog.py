@@ -619,6 +619,46 @@ def _check_decompile_safety(session, tasks):
         return "proceed"
 
 
+def _progress_feed_path():
+    """The cross-process progress feed the Extraction Monitor renders (same path
+    run_all_analyzers writes)."""
+    import os
+    try:
+        import idc
+        idb = idc.get_idb_path()
+        if idb:
+            return os.path.splitext(idb)[0] + ".tc_wow_analyzer.run_report.progress.jsonl"
+    except Exception:
+        pass
+    return None
+
+
+def _feed_emit(path, rec):
+    if not path:
+        return
+    try:
+        import json
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _pump_events():
+    """Pump the Qt event loop so dockable viewers repaint DURING a synchronous
+    main-thread batch (the timer alone is starved). Contained, defensive use of
+    processEvents only — no widgets — across whichever binding IDA ships."""
+    for mod in ("PySide6", "PyQt5"):
+        try:
+            qt = __import__(mod, fromlist=["QtWidgets"])
+            app = qt.QtWidgets.QApplication.instance()
+            if app is not None:
+                app.processEvents()
+            return
+        except Exception:
+            continue
+
+
 def _execute_tasks(session, tasks, batch_name="Custom"):
     """Execute the selected tasks in order with crash-safe checkpointing.
 
@@ -686,30 +726,76 @@ def _execute_tasks(session, tasks, batch_name="Custom"):
 
     amgr.batch_start(batch_name, tasks)
 
-    # Auto-open the activity view so the user can see progress
+    # Live progress feed (cross-process) + native wait box (Cancel + event pump).
+    _feed = _progress_feed_path()
     try:
-        from tc_wow_analyzer.ui.activity_view import show_activity_view
-        show_activity_view()
+        if _feed:
+            open(_feed, "w").close()  # truncate at batch start
     except Exception:
         pass
+    _n = len(tasks)
+    _wait = False
+    try:
+        import ida_kernwin as _kw
+        import idaapi as _ia
+        if not _ia.cvar.batch:
+            _kw.show_wait_box("TC WoW: %s\nStarting %d tasks..." % (batch_name, _n))
+            _wait = True
+    except Exception:
+        _wait = False
+
+    # Auto-open the live Extraction Monitor (and keep the Activity view too).
+    for _opener in ("extraction_monitor.show_extraction_monitor",
+                    "activity_view.show_activity_view"):
+        try:
+            _mod, _fn = _opener.split(".")
+            _m = __import__("tc_wow_analyzer.ui." + _mod, fromlist=[_fn])
+            getattr(_m, _fn)()
+        except Exception:
+            pass
+    _pump_events()
 
     for i, task_name in enumerate(tasks):
         msg_info(f"[{i + 1}/{len(tasks)}] >>> {task_name}")
         amgr.task_start(task_name)
         amgr.task_progress(i + 1, len(tasks))
+        if _wait:
+            try:
+                if _kw.user_cancelled():
+                    _feed_emit(_feed, {"ts": time.time(), "event": "cancelled",
+                                       "ran": i, "total": _n})
+                    msg_error("Batch cancelled by user before %s" % task_name)
+                    break
+                _kw.replace_wait_box("TC WoW: %s  [%d/%d]\n%s"
+                                     % (batch_name, i + 1, _n, task_name))
+            except Exception:
+                pass
+        _feed_emit(_feed, {"ts": time.time(), "idx": i + 1, "total": _n,
+                           "name": task_name, "status": "running"})
+        _pump_events()
+        _t0 = time.time()
         try:
             count = _run_single_task(session, task_name)
             results[task_name] = count
             msg_info(f"    -> {count} items")
             amgr.task_end(task_name, count=count)
+            _feed_emit(_feed, {"ts": time.time(), "idx": i + 1, "total": _n,
+                               "name": task_name,
+                               "status": "OK" if (isinstance(count, int) and count >= 0) else "FAILED",
+                               "items": count if isinstance(count, int) else None,
+                               "elapsed": round(time.time() - _t0, 1)})
         except Exception as e:
             msg_error(f"    -> FAILED: {e}")
             import traceback
             traceback.print_exc()
             results[task_name] = -1
             amgr.task_end(task_name, result=f"FAILED: {e}")
+            _feed_emit(_feed, {"ts": time.time(), "idx": i + 1, "total": _n,
+                               "name": task_name, "status": "FAILED",
+                               "elapsed": round(time.time() - _t0, 1)})
 
         amgr.batch_task_done(task_name)
+        _pump_events()
 
         # Checkpoint after each task
         state["completed"].append(task_name)
@@ -723,6 +809,16 @@ def _execute_tasks(session, tasks, batch_name="Custom"):
     # All done — clear the batch state
     if db:
         _clear_batch_state(db)
+
+    _failed = [n for n, c in results.items() if not (isinstance(c, int) and c >= 0)]
+    _feed_emit(_feed, {"ts": time.time(), "event": "complete",
+                       "ran": len(results), "total": _n, "failed": _failed})
+    if _wait:
+        try:
+            _kw.hide_wait_box()
+        except Exception:
+            pass
+    _pump_events()
 
     amgr.batch_end()
 

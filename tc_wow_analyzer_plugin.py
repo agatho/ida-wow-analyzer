@@ -124,6 +124,7 @@ class TcWowAnalyzerPlugmod(idaapi.plugmod_t):
             ("tc_wow:import_data",       "Edit/TC WoW/Analysis/Import Existing Data"),
             # ── Views submenu ──
             ("tc_wow:activity",          "Edit/TC WoW/Views/Activity Log"),
+            ("tc_wow:extraction_monitor", "Edit/TC WoW/Views/Extraction Monitor"),
             ("tc_wow:quality_dashboard", "Edit/TC WoW/Views/Quality Dashboard"),
             ("tc_wow:web_dashboard",     "Edit/TC WoW/Views/Web Dashboard"),
             ("tc_wow:housing_view",      "Edit/TC WoW/Views/Housing Deep Dive"),

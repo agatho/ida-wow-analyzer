@@ -10,6 +10,23 @@ import traceback
 
 from tc_wow_analyzer.core.utils import msg_info, msg_error, _init_log_file, _write_log
 
+# Optional UI (wait box for interactive in-GUI runs). Absent/irrelevant in
+# headless idat — every use is guarded so it can never affect the headless path.
+try:
+    import ida_kernwin as _ida_kernwin
+    import idaapi as _idaapi
+except Exception:
+    _ida_kernwin = None
+    _idaapi = None
+
+
+def _wait_interactive():
+    """True only in an interactive GUI session (never in headless/batch)."""
+    try:
+        return _ida_kernwin is not None and not _idaapi.cvar.batch
+    except Exception:
+        return False
+
 
 def _gc_resource_snapshot():
     """Best-effort memory + handle snapshot for resource tracking."""
@@ -294,6 +311,20 @@ def run_all_analyzers(session):
     except Exception:
         pass
 
+    # Interactive in-GUI runs get a native wait box: live per-analyzer status +
+    # a Cancel button. It also pumps the Qt event loop, so the dockable
+    # Extraction Monitor repaints mid-run instead of only at boundaries. Fully
+    # guarded; a no-op in headless idat (the usual extraction path).
+    _wait_active = False
+    _cancelled = False
+    if _wait_interactive():
+        try:
+            _ida_kernwin.show_wait_box(
+                "TC WoW extraction\nStarting %d analyzers..." % (_to_run or 0))
+            _wait_active = True
+        except Exception:
+            _wait_active = False
+
     def _emit_progress(rec):
         try:
             with open(_prog_path, "a", encoding="utf-8") as pf:
@@ -315,6 +346,23 @@ def run_all_analyzers(session):
         if _amgr:
             try:
                 _amgr.extraction_step(_ran, name)
+            except Exception:
+                pass
+        # Cross-process "now running" marker for the Extraction Monitor window,
+        # and the interactive wait box (with Cancel) for in-GUI runs.
+        _emit_progress({"ts": time.time(), "idx": _ran, "total": _to_run,
+                        "name": name, "status": "running"})
+        if _wait_active:
+            try:
+                if _ida_kernwin.user_cancelled():
+                    _cancelled = True
+                    _emit_progress({"ts": time.time(), "event": "cancelled",
+                                    "ran": _ran, "total": _to_run})
+                    msg_error("Extraction cancelled by user at "
+                              f"[{_ran}/{_to_run}] before {name}")
+                    break
+                _ida_kernwin.replace_wait_box(
+                    "TC WoW extraction  [%d/%d]\n%s" % (_ran, _to_run, name))
             except Exception:
                 pass
         msg_info(f"=== [{idx+1}/{len(analyzers)}] Running analyzer: {name} ===")
@@ -432,6 +480,12 @@ def run_all_analyzers(session):
         msg_info(f"Run report written: {_report_path()}")
     except Exception as e:
         msg_error(f"Could not write run report: {e}")
+
+    if _wait_active:
+        try:
+            _ida_kernwin.hide_wait_box()
+        except Exception:
+            pass
 
     # Human-readable summary
     msg_info(f"=== Analysis complete: {total} total items across "

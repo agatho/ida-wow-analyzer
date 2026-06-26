@@ -183,6 +183,8 @@ class PluginSession:
              "Ctrl+Shift+L", self._action_llm_run),
             ("tc_wow:activity", "Activity Log",
              "Ctrl+Shift+G", self._action_activity_view),
+            ("tc_wow:extraction_monitor", "Extraction Monitor",
+             "Ctrl+Shift+E", self._action_extraction_monitor),
             ("tc_wow:llm_cancel", "Cancel LLM Processing",
              "Ctrl+Shift+X", self._action_llm_cancel),
         ]
@@ -422,6 +424,16 @@ class PluginSession:
             show_activity_view()
         except Exception as e:
             msg_error(f"Activity view error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _action_extraction_monitor(self):
+        """Show the live Extraction Monitor (real-time analyzer pipeline status)."""
+        try:
+            from tc_wow_analyzer.ui.extraction_monitor import show_extraction_monitor
+            show_extraction_monitor()
+        except Exception as e:
+            msg_error(f"Extraction monitor error: {e}")
             import traceback
             traceback.print_exc()
 
