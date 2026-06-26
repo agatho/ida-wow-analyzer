@@ -120,6 +120,7 @@ class TcWowAnalyzerPlugmod(idaapi.plugmod_t):
             # ── Analysis submenu ──
             ("tc_wow:analyze_function",  "Edit/TC WoW/Analysis/Analyze Current Function"),
             ("tc_wow:lookup_opcode",     "Edit/TC WoW/Analysis/Lookup Opcode at Cursor"),
+            ("tc_wow:resolve_fdid",      "Edit/TC WoW/Analysis/Resolve FileDataID at Cursor"),
             ("tc_wow:classify_function", "Edit/TC WoW/Analysis/Classify Function"),
             ("tc_wow:import_data",       "Edit/TC WoW/Analysis/Import Existing Data"),
             # ── Views submenu ──

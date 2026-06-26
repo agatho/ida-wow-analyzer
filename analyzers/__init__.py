@@ -221,6 +221,7 @@ def run_all_analyzers(session):
         ("Topic Deep Extractor", _run_topic_deep_extractor),
         ("Lua API Tag", _run_lua_api_tag),
         ("Hash Resolution", _run_hash_resolution),
+        ("FDID Resolution", _run_fdid_resolution),
         ("CVar Callback Rename", _run_cvar_callback_rename),
         ("Hash Function Naming", _run_hash_func_naming),
         ("CVar Consumer Tag", _run_cvar_consumer_tag),
@@ -716,6 +717,11 @@ def _run_topic_deep_extractor(session):
 def _run_hash_resolution(session):
     from tc_wow_analyzer.analyzers.hash_resolution import analyze_hash_resolution
     return analyze_hash_resolution(session)
+
+
+def _run_fdid_resolution(session):
+    from tc_wow_analyzer.analyzers.fdid_resolution import analyze_fdid_resolution
+    return analyze_fdid_resolution(session)
 
 
 def _run_cvar_callback_rename(session):

@@ -14,6 +14,10 @@ to the IDB:
      a CVar callback when present.
   4. For 32-bit hits in .rdata that are unambiguous AND surrounded by other
      hash-shaped values (HashLink table heuristic), apply names as well.
+  5. Code-embedded dispatch hashes: reads `hash_text_immediates_67186.json`
+     (from scripts/hash_text_immediates.py, which scans cfunc_cache pseudocode)
+     and sets a repeatable `[HashDispatch]` comment at the exact comparison
+     instruction inside each dispatching function.
 
 Output:
   kv_store["hash_resolution"] = {
@@ -36,6 +40,7 @@ import time
 import ida_bytes
 import ida_funcs
 import ida_name
+import ida_ua
 import idaapi
 import idc
 
@@ -152,6 +157,68 @@ def _detect_cvar_entry(ea, hash_value, expected_name):
     return False
 
 
+def _find_immediate_site(func_ea, value):
+    """Find the instruction inside func_ea whose immediate operand == value.
+
+    64-bit hash compares materialize as `mov reg, imm64` then `cmp`, so the
+    constant appears as an o_imm operand on some instruction in the function.
+    Returns that instruction EA, or BADADDR if not found (e.g. split immediate).
+    """
+    f = ida_funcs.get_func(func_ea)
+    if not f:
+        return idaapi.BADADDR
+    ea = f.start_ea
+    while ea != idaapi.BADADDR and ea < f.end_ea:
+        insn = ida_ua.insn_t()
+        if ida_ua.decode_insn(insn, ea):
+            for op in insn.ops:
+                if op.type == ida_ua.o_void:
+                    break
+                if op.type == ida_ua.o_imm and (op.value & 0xFFFFFFFFFFFFFFFF) == value:
+                    return ea
+        nxt = idc.next_head(ea, f.end_ea)
+        if nxt <= ea:
+            break
+        ea = nxt
+    return idaapi.BADADDR
+
+
+def _apply_text_immediates(session, stats):
+    """Apply code-embedded hash dispatch resolutions from the cfunc_cache
+    immediate scan (scripts/hash_text_immediates.py).  Comments the exact
+    comparison instruction (or the function head as fallback)."""
+    path = dumps_build_path("hash_text_immediates")
+    if not os.path.isfile(path):
+        msg_info(f"hash_resolution: no text-immediate file ({path}) — skipping")
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    matches = data.get("matches", [])
+    msg_info(f"hash_resolution: applying {len(matches)} code-immediate dispatch hits")
+    for m in matches:
+        cands = m.get("candidates", [])
+        names = sorted({c["string"] for c in cands})
+        if len(names) != 1:
+            stats["text_imm_ambiguous"] += 1
+            continue
+        name = names[0]
+        try:
+            func_ea = int(m["ea_int"])
+            value = int(m["constant"], 16)
+        except (KeyError, ValueError):
+            continue
+        bits = m.get("width_bits", 64)
+        algo = cands[0].get("algo", "")
+        comment = (f"[HashDispatch] {algo} hash of {name!r} = "
+                   f"0x{value:0{bits // 4}X}")
+        site = _find_immediate_site(func_ea, value)
+        target = site if site != idaapi.BADADDR else func_ea
+        if _try_set_comment(target, comment, repeatable=True):
+            stats["text_imm_comments"] += 1
+            if site != idaapi.BADADDR:
+                stats["text_imm_sites_found"] += 1
+
+
 def analyze_hash_resolution(session):
     db = session.db
     if db is None:
@@ -175,6 +242,9 @@ def analyze_hash_resolution(session):
         "names_set_32": 0,
         "ambiguous_skipped": 0,
         "non_unique_strings": 0,
+        "text_imm_comments": 0,
+        "text_imm_sites_found": 0,
+        "text_imm_ambiguous": 0,
     }
 
     # ── 64-bit hits ──
@@ -239,6 +309,9 @@ def analyze_hash_resolution(session):
             repeatable=True,
         )
 
+    # ── code-embedded dispatch hashes (cfunc_cache immediate scan) ──
+    _apply_text_immediates(session, stats)
+
     elapsed = round(time.time() - t0, 2)
     result = {
         "version": 1,
@@ -253,6 +326,7 @@ def analyze_hash_resolution(session):
         f"hash_resolution: names_64={stats['names_set_64']} "
         f"cvar_entries={stats['cvar_entries_named']} "
         f"comments_64={stats['comments_set_64']} names_32={stats['names_set_32']} "
+        f"text_imm={stats['text_imm_comments']} (sites {stats['text_imm_sites_found']}) "
         f"ambig_skipped={stats['ambiguous_skipped']} ({elapsed}s)"
     )
     if debug_failures:
