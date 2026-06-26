@@ -15,6 +15,7 @@ Open via Edit/TC WoW/Extraction Monitor (Ctrl+Shift+E).
 """
 import json
 import os
+import sqlite3
 import time
 
 import ida_kernwin
@@ -27,6 +28,94 @@ _BARW = 34
 _timer_active = False
 _viewer = None
 _last_sig = None
+
+# ── KPI header (at-a-glance pipeline health) ──────────────────────────────────
+# Headline inventory counts from the knowledge DB + a last-run delta. The DB is
+# opened READ-ONLY (WAL allows concurrent readers, so it never fights the writer)
+# and the result is cached a few seconds so the 700ms timer stays cheap.
+_KPI_TABLES = [("cfuncs", "cfunc_cache"), ("funcs", "functions"),
+               ("jam", "jam_types"), ("opcodes", "opcodes"),
+               ("tc", "tc_packets"), ("db2", "db2_tables"),
+               ("strings", "strings")]
+_kpi_cache = {"ts": 0.0, "data": None}
+
+
+def _db_path():
+    try:
+        idb = idc.get_idb_path()
+        if idb:
+            return os.path.splitext(idb)[0] + ".tc_wow.db"
+    except Exception:
+        pass
+    return None
+
+
+def _kpi_counts():
+    now = time.time()
+    if _kpi_cache["data"] is not None and now - _kpi_cache["ts"] < 4.0:
+        return _kpi_cache["data"]
+    path = _db_path()
+    out = None
+    if path and os.path.exists(path):
+        try:
+            con = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"),
+                                  uri=True, timeout=1.0)
+            try:
+                tabs = set(r[0] for r in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"))
+                out = {}
+                for label, tab in _KPI_TABLES:
+                    if tab in tabs:
+                        try:
+                            out[label] = con.execute(
+                                "SELECT COUNT(*) FROM %s" % tab).fetchone()[0]
+                        except Exception:
+                            pass
+                if "failure_ledger" in tabs:
+                    try:
+                        out["fail_open"] = con.execute(
+                            "SELECT COUNT(*) FROM failure_ledger "
+                            "WHERE resolved=0").fetchone()[0]
+                    except Exception:
+                        pass
+            finally:
+                con.close()
+        except Exception:
+            out = None
+    _kpi_cache["ts"] = now
+    _kpi_cache["data"] = out
+    return out
+
+
+def _snapshot_path():
+    p = _db_path()
+    return (os.path.splitext(p)[0] + "_kpi.json") if p else None
+
+
+def _load_snap():
+    try:
+        sp = _snapshot_path()
+        if sp and os.path.exists(sp):
+            return json.load(open(sp, encoding="utf-8"))
+    except Exception:
+        pass
+    return None
+
+
+def _save_snap(d):
+    try:
+        sp = _snapshot_path()
+        if sp:
+            json.dump(d, open(sp, "w", encoding="utf-8"))
+    except Exception:
+        pass
+
+
+def _sep(n):
+    try:
+        return "{:,}".format(int(n))
+    except Exception:
+        return str(n)
 
 
 # ── feed location + parse ─────────────────────────────────────────────────────
@@ -121,12 +210,41 @@ def _bar(done, total):
     return "[" + "#" * fill + "-" * (_BARW - fill) + "]"
 
 
+def _kpi_lines(kpi, snap):
+    """Inventory + health header lines (shown always, even when idle)."""
+    out = []
+    if not kpi:
+        return out
+    inv = ["%s %s" % (_sep(kpi[k]), k)
+           for k, _t in _KPI_TABLES if k in kpi]
+    if inv:
+        out.append(" " + "  ".join(inv[:4]))
+        if len(inv) > 4:
+            out.append(" " + "  ".join(inv[4:]))
+    health = []
+    if snap and kpi.get("cfuncs") is not None and snap.get("cfuncs") is not None:
+        d = kpi["cfuncs"] - snap["cfuncs"]
+        if d:
+            health.append("cfuncs {:+,} since last run".format(d))
+    if kpi.get("fail_open"):
+        health.append("%d failures open" % kpi["fail_open"])
+    if health:
+        out.append(" " + "  ·  ".join(health))
+    return out
+
+
 def _render(path):
     data = _read_feed(path)
+    kpi = _kpi_counts()
+    snap = _load_snap()
     L = []
     L.append("=" * 52)
     L.append(" TC WoW — Extraction Monitor")
     L.append("=" * 52)
+    kl = _kpi_lines(kpi, snap)
+    if kl:
+        L.extend(kl)
+        L.append("-" * 52)
     if data is None or (not data["order"] and not data["complete"]):
         L.append("")
         L.append("IDLE — no active extraction.")
@@ -164,18 +282,30 @@ def _render(path):
         eta = (wall / done) * (total - done)
     rate = (done / wall * 60.0) if wall > 0 else 0.0
 
+    run_items = sum(s["items"] for s in state.values()
+                    if isinstance(s.get("items"), int) and s["items"] >= 0)
+
     L.append(" Status   : %s" % status)
     L.append(" Progress : %s %d/%d  (%d%%)" % (_bar(done, total), done, total, pct))
     L.append(" Elapsed  : %s    ETA: %s    %.1f/min"
              % (_fmt_dur(wall), _fmt_dur(eta), rate))
+    items_line = " Produced : %s items this run" % _sep(run_items)
+    if snap and isinstance(snap.get("items"), int):
+        items_line += "   (Δ {:+,} vs last run)".format(run_items - snap["items"])
+    L.append(items_line)
     if running:
-        rel = state[running]
-        since = ""
-        L.append(" Current  : >> %s%s" % (running, since))
+        L.append(" Current  : >> %s" % running)
     if failed:
         L.append(" Failures : %d  (%s%s)" % (len(failed), ", ".join(failed[:4]),
                                              " ..." if len(failed) > 4 else ""))
     L.append("-" * 52)
+
+    # On completion, snapshot this run's totals so the NEXT run can show a delta.
+    if data["complete"]:
+        sig = data.get("first_ts")
+        if not snap or snap.get("run_sig") != sig:
+            _save_snap({"run_sig": sig, "items": run_items,
+                        "cfuncs": (kpi or {}).get("cfuncs"), "ts": time.time()})
 
     # per-analyzer rows. If the feed is the full analyzer pipeline
     # (run_all_analyzers — every feed name is a registry analyzer), show the whole
@@ -216,6 +346,12 @@ def _colorize(ln):
     try:
         if ln.startswith("="):
             return idaapi.COLSTR(ln, idaapi.SCOLOR_RPTCMT)
+        if "failures open" in ln:
+            return idaapi.COLSTR(ln, idaapi.SCOLOR_ERROR)
+        if "since last run" in ln or ln.startswith(" Produced"):
+            return idaapi.COLSTR(ln, idaapi.SCOLOR_AUTOCMT)
+        if ("  cfuncs" in ln or " cfuncs  " in ln) and "since" not in ln:
+            return idaapi.COLSTR(ln, idaapi.SCOLOR_NUMBER)
         if "[OK]" in ln:
             return idaapi.COLSTR(ln, idaapi.SCOLOR_CREFTAIL)
         if "[!!]" in ln or "FAILED" in ln or "Failures" in ln:
