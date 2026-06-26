@@ -227,7 +227,7 @@ def _kpi_lines(kpi, snap):
         if d:
             health.append("cfuncs {:+,} since last run".format(d))
     if kpi.get("fail_open"):
-        health.append("%d failures open" % kpi["fail_open"])
+        health.append("%d failures open  (dbl-click)" % kpi["fail_open"])
     if health:
         out.append(" " + "  ·  ".join(health))
     return out
@@ -296,8 +296,8 @@ def _render(path):
     if running:
         L.append(" Current  : >> %s" % running)
     if failed:
-        L.append(" Failures : %d  (%s%s)" % (len(failed), ", ".join(failed[:4]),
-                                             " ..." if len(failed) > 4 else ""))
+        L.append(" Failures : %d  (%s%s)  — dbl-click" % (
+            len(failed), ", ".join(failed[:4]), " ..." if len(failed) > 4 else ""))
     L.append("-" * 52)
 
     # On completion, snapshot this run's totals so the NEXT run can show a delta.
@@ -375,6 +375,27 @@ class _Monitor(ida_kernwin.simplecustviewer_t):
         for ln in _render(_progress_path()):
             self.AddLine(_colorize(ln))
         return True
+
+    def _current_line(self):
+        for kw in ({"mouse": 1, "notags": 1}, {"notags": 1}, {}):
+            try:
+                ln = self.GetCurrentLine(**kw)
+                if ln:
+                    return ln if isinstance(ln, str) else ln.decode("latin1", "replace")
+            except Exception:
+                continue
+        return ""
+
+    def OnDblClick(self, shift):
+        line = self._current_line().lower()
+        if "failure" in line:  # KPI "N failures open" or the run "Failures :" line
+            try:
+                from tc_wow_analyzer.ui.failure_ledger_view import show_failure_ledger
+                show_failure_ledger()
+            except Exception:
+                pass
+            return True
+        return False
 
     def OnClose(self):
         global _viewer

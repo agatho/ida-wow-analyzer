@@ -185,6 +185,8 @@ class PluginSession:
              "Ctrl+Shift+G", self._action_activity_view),
             ("tc_wow:extraction_monitor", "Extraction Monitor",
              "Ctrl+Shift+E", self._action_extraction_monitor),
+            ("tc_wow:failure_ledger", "Failure Ledger",
+             "", self._action_failure_ledger),
             ("tc_wow:llm_cancel", "Cancel LLM Processing",
              "Ctrl+Shift+X", self._action_llm_cancel),
         ]
@@ -434,6 +436,16 @@ class PluginSession:
             show_extraction_monitor()
         except Exception as e:
             msg_error(f"Extraction monitor error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _action_failure_ledger(self):
+        """Show the durable failure ledger (open/unresolved pipeline failures)."""
+        try:
+            from tc_wow_analyzer.ui.failure_ledger_view import show_failure_ledger
+            show_failure_ledger()
+        except Exception as e:
+            msg_error(f"Failure ledger error: {e}")
             import traceback
             traceback.print_exc()
 
