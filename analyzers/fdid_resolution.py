@@ -49,6 +49,21 @@ def _safe_name(s):
     return s[:64]
 
 
+def _ensure_dword(ea):
+    """Ensure `ea` is its own 4-byte data head so a comment attaches exactly
+    there.  No-op if it is already a clean dword; otherwise (re)define it,
+    splitting any larger item that was covering these bytes."""
+    try:
+        if (idc.get_item_head(ea) == ea
+                and ida_bytes.get_item_size(ea) == 4
+                and ida_bytes.is_data(ida_bytes.get_flags(ea))):
+            return
+        ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, 4)
+        ida_bytes.create_data(ea, ida_bytes.FF_DWORD, 4, idaapi.BADADDR)
+    except Exception:
+        pass
+
+
 def _name_table_start(ea, desired):
     """Name a dword table start, refusing to clobber meaningful symbols."""
     if not ea or ea == idaapi.BADADDR:
@@ -101,15 +116,23 @@ def analyze_fdid_resolution(session):
             stats["tables_named"] += 1
         header = (f"[FDIDTable] {label}/ — {t.get('count', 0)} FileDataIDs "
                   f"({t.get('top_dir_frac', 0) * 100:.0f}% {t.get('top_dir', '')})")
-        if _try_set_comment(start, header, repeatable=True):
-            stats["header_comments"] += 1
-        for e in t.get("entries", []):
+        entries = t.get("entries", [])
+        for idx, e in enumerate(entries):
             try:
                 eea = int(e["ea"], 16)
             except (KeyError, ValueError):
                 continue
-            cmt = f"[FDID] {e['fdid']} = {e['path']}"
-            if _try_set_comment(eea, cmt, repeatable=True):
+            # Materialize a 4-byte dword head so the comment lands exactly at this
+            # FDID and not on a containing item's head (entries can otherwise fall
+            # mid-qword, collapsing several FDIDs onto one comment).
+            _ensure_dword(eea)
+            line = f"[FDID] {e['fdid']} = {e['path']}"
+            # Entry 0 shares the table-start EA — fold the table header in here so
+            # it isn't overwritten by (or overwrite) the entry-0 [FDID] comment.
+            if idx == 0:
+                line = header + "\n" + line
+                stats["header_comments"] += 1
+            if _try_set_comment(eea, line, repeatable=True):
                 stats["entry_comments"] += 1
 
     elapsed = round(time.time() - t0, 2)
