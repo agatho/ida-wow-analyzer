@@ -69,6 +69,44 @@ JAM_TO_WRITE_METHOD = {
 
 
 _PACKET_FIELDS_ENSURED = {"done": False}
+_TC_ENSURED = {"done": False}
+
+
+def _ensure_tc_catalog(session):
+    """Populate the TC packet catalog once per session. TC is the PRIMARY,
+    canonical named-field source (the client's JAM serialization is ~92% inlined
+    and not cleanly recoverable). Guarded so it can never break codegen."""
+    if _TC_ENSURED["done"]:
+        return
+    _TC_ENSURED["done"] = True
+    db = getattr(session, "db", None)
+    if db is None:
+        return
+    try:
+        row = db.fetchone("SELECT COUNT(*) AS c FROM tc_packets")
+        if row and row["c"] > 0:
+            return  # already imported
+        from tc_wow_analyzer.codegen.tc_packet_import import import_tc_catalog
+        import_tc_catalog(session)
+    except Exception as e:
+        msg_warn(f"TC catalog import skipped: {e}")
+
+
+def _tc_struct_for(session, jam_name):
+    """Return (tc_name, fields) if this JAM type resolves to a TC struct/packet
+    (TC's canonical named C++ fields), else None."""
+    _ensure_tc_catalog(session)
+    db = getattr(session, "db", None)
+    if db is None:
+        return None
+    try:
+        from tc_wow_analyzer.codegen.tc_packet_import import tc_fields_for_jam
+        hit = tc_fields_for_jam(db, jam_name)
+        if hit:
+            return hit[1], hit[2]
+    except Exception:
+        pass
+    return None
 
 
 def _ensure_packet_fields(session):
@@ -114,6 +152,11 @@ def generate_packet_struct(session, jam_name, direction="CMSG"):
         };
     """
     db = session.db
+    # PRIMARY source: TrinityCore's canonical named fields, if this JAM type
+    # resolves to a TC struct/packet by name. Falls back to client recovery.
+    tc = _tc_struct_for(session, jam_name)
+    if tc:
+        return _generate_struct_from_tc(jam_name, tc[0], tc[1], direction)
     _ensure_packet_fields(session)
     row = db.fetchone("SELECT * FROM jam_types WHERE name = ?", (jam_name,))
     if not row:
@@ -263,6 +306,23 @@ def generate_all_for_jam(session, jam_name, direction="CMSG"):
 
 
 # ─── Helpers ───────────────────────────────────────────────────────
+
+def _generate_struct_from_tc(jam_name, tc_name, fields, direction):
+    """Emit a struct using TrinityCore's canonical named C++ fields (verbatim
+    types), the authoritative layout for a name-matched JAM type."""
+    lines = [f"// resolved to TrinityCore ::{tc_name} (canonical named fields)",
+             f"struct {tc_name}",
+             "{"]
+    for f in fields:
+        typ = f.get("type", "uint32")
+        name = f.get("name", f"Field{f.get('index', 0)}")
+        arr = f.get("array")
+        suffix = f"[{arr}]" if isinstance(arr, str) else ("[]" if arr else "")
+        default = _get_default(typ)
+        lines.append(f"    {typ} {name}{suffix}{default};")
+    lines.append("};")
+    return "\n".join(lines) + "\n"
+
 
 def _jam_to_class_name(jam_name):
     """Convert JAM name to TrinityCore class name.

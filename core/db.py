@@ -10,7 +10,7 @@ import json
 import time
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 -- Schema version tracking
@@ -226,6 +226,37 @@ CREATE INDEX IF NOT EXISTS idx_opcodes_jam_type ON opcodes(jam_type);
 CREATE INDEX IF NOT EXISTS idx_opcodes_wire ON opcodes(wire_opcode);
 CREATE INDEX IF NOT EXISTS idx_annotations_type ON annotations(ann_type);
 CREATE INDEX IF NOT EXISTS idx_annotations_source ON annotations(source);
+
+-- ── TrinityCore packet catalog (v3) ──────────────────────────────
+-- Canonical NAMED-field source for codegen, parsed from TC
+-- src/server/game/Server/Packets/*.h. The WoW client's JAM serialization is
+-- ~92% inlined and not cleanly recoverable, so TC is the primary field source;
+-- client recovery (jam_types.fields_json) only supplements packets TC lacks.
+-- Also the 12.0.7 coverage gate: an opcode/packet present here is already
+-- handled by TC and need not be generated.
+CREATE TABLE IF NOT EXISTS tc_packets (
+    name TEXT PRIMARY KEY,
+    opcode TEXT,            -- CMSG_*/SMSG_* from the ctor
+    direction TEXT,        -- CMSG/SMSG
+    namespace TEXT,
+    file TEXT,
+    field_count INTEGER,
+    fields_json TEXT        -- [{index,name,type(C++),array?,repeated?}]
+);
+CREATE TABLE IF NOT EXISTS tc_structs (
+    name TEXT PRIMARY KEY,  -- reusable nested packet structs (map to JAM nested types)
+    namespace TEXT,
+    file TEXT,
+    field_count INTEGER,
+    fields_json TEXT
+);
+CREATE TABLE IF NOT EXISTS tc_opcodes (
+    name TEXT PRIMARY KEY,  -- CMSG_*/SMSG_*/MSG_*
+    value INTEGER,
+    direction TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tc_packets_opcode ON tc_packets(opcode);
+CREATE INDEX IF NOT EXISTS idx_tc_packets_dir ON tc_packets(direction);
 """
 
 
