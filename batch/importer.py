@@ -430,8 +430,49 @@ def _import_jam_types(session, filepath):
     return count
 
 
+# WoWDBDefs is the DB2 schema source of truth: a real table has a matching
+# <Name>.dbd. (Same directory db2_loadinfo_codegen.py uses.) We validate
+# imported names against it to reject the CVar/Lua-name garbage the AutoDump
+# db2 extractor emits on some builds.
+_WOWDBDEFS_DIR = r"c:\dumps\WoWDBDefs\definitions"
+_DBD_NAME_CACHE = None
+
+
+def _valid_db2_table_names():
+    """Set of real DB2 table names from WoWDBDefs (.dbd file stems). Cached.
+
+    Returns an empty set if WoWDBDefs isn't installed, in which case the caller
+    degrades to size-only validation (still drops the worst garbage).
+    """
+    global _DBD_NAME_CACHE
+    if _DBD_NAME_CACHE is None:
+        names = set()
+        try:
+            for fn in os.listdir(_WOWDBDEFS_DIR):
+                if fn.endswith(".dbd"):
+                    names.add(fn[:-4])
+        except Exception:
+            pass
+        _DBD_NAME_CACHE = names
+    return _DBD_NAME_CACHE
+
+
 def _import_db2_metadata(session, filepath):
-    """Import wow_db2_metadata JSON → db2_tables table."""
+    """Import wow_db2_metadata JSON → db2_tables table (VALIDATED).
+
+    The AutoDump db2 extractor regressed after build 66838 and on some builds
+    emits CVar names (GxMaxFrameLatency), Lua API names (GetItemHyperlink), and
+    junk (D3D11CreateDevice) as "tables", with record_size = ASCII-bytes-as-dword
+    (values in the millions/billions). Importing it verbatim once put 2048
+    garbage rows into db2_tables. We now keep an entry only if it passes
+    structural sanity AND matches a real WoWDBDefs .dbd:
+        record_size in [1, 65535]   (kills ASCII-as-dword garbage)
+        field_count in [1, 2000]
+        name has a matching <Name>.dbd
+    Empirically: keeps 599/608 on the good 66838 dump, drops all but 1/2048 and
+    0/13 on the garbage 67186/68275 dumps. The <10 .dbd-less real tables
+    (GameTable-style) are dropped and logged; recover them via the codegen path.
+    """
     db = session.db
     cfg = session.cfg
 
@@ -439,11 +480,37 @@ def _import_db2_metadata(session, filepath):
         data = json.load(f)
 
     tables = data.get("tables", [])
+    valid_names = _valid_db2_table_names()
+    have_dbd = bool(valid_names)
+    if not have_dbd:
+        msg_warn(f"DB2 import: WoWDBDefs not found at {_WOWDBDEFS_DIR}; "
+                 f"falling back to size-only validation (cannot verify table names)")
+
     count = 0
+    skipped_size = 0
+    skipped_noname = 0
+    skipped_samples = []
 
     for table in tables:
         name = table.get("name", "")
         if not name:
+            continue
+
+        record_size = table.get("record_size", 0)
+        field_count = table.get("field_count", 0)
+
+        # Structural sanity: real DB2 records are small; ASCII-as-dword garbage
+        # lands in the millions/billions (or record_size is missing/None).
+        if not (isinstance(record_size, int) and 1 <= record_size <= 65535
+                and isinstance(field_count, int) and 1 <= field_count <= 2000):
+            skipped_size += 1
+            if len(skipped_samples) < 10:
+                skipped_samples.append(f"{name}(rs={record_size},fc={field_count})")
+            continue
+
+        # Name must match a known DB2 table (when WoWDBDefs is available).
+        if have_dbd and name not in valid_names:
+            skipped_noname += 1
             continue
 
         meta_rva = table.get("meta_rva")
@@ -455,7 +522,10 @@ def _import_db2_metadata(session, filepath):
 
         layout_hash = table.get("layout_hash", 0)
         if isinstance(layout_hash, str):
-            layout_hash = int(layout_hash, 16)
+            try:
+                layout_hash = int(layout_hash, 16)
+            except ValueError:
+                layout_hash = 0
 
         db.upsert_db2_table(
             name=name,
@@ -463,8 +533,8 @@ def _import_db2_metadata(session, filepath):
             layout_hash=layout_hash,
             meta_rva=meta_rva,
             meta_ea=meta_ea,
-            field_count=table.get("field_count", 0),
-            record_size=table.get("record_size", 0),
+            field_count=field_count,
+            record_size=record_size,
             index_field=table.get("index_field", -1),
         )
         count += 1
@@ -473,6 +543,20 @@ def _import_db2_metadata(session, filepath):
             db.commit()
 
     db.commit()
+
+    total = len(tables)
+    rejected = skipped_size + skipped_noname
+    if rejected:
+        msg_info(f"DB2 import: kept {count}/{total} tables; rejected {rejected} "
+                 f"({skipped_size} bad size/field_count, {skipped_noname} no .dbd match)")
+        if skipped_samples:
+            msg_info(f"  sample rejected (bad size): {skipped_samples}")
+        if count == 0 and total > 0:
+            msg_warn("DB2 import: ALL entries rejected - the AutoDump db2_metadata "
+                     "extractor is likely broken for this build (helper_dll.c). "
+                     "db2_tables left untouched; use the WoWDBDefs/codegen path.")
+    else:
+        msg_info(f"DB2 import: {count} tables")
     return count
 
 
@@ -1295,38 +1379,48 @@ def _import_crypto(session, filepath):
 # ─── Helpers ───────────────────────────────────────────────────────
 
 def _detect_build_number(dumps_dir):
-    """Auto-detect build number from the dumps directory.
+    """Auto-detect the build number from the dumps directory.
 
-    Detection order:
-      1. wow_manifest_*.json → "build_number" field
-      2. Filename pattern: wow_functions_NNNNN.json → extract NNNNN
+    When several builds' dumps coexist (e.g. wow_manifest_67186.json and
+    wow_manifest_68275.json from successive migrations), pick the HIGHEST build
+    number — the analysis target is always the newest. The previous version
+    returned the *first* manifest glob hit, which was nondeterministic and once
+    imported a stale 67186 dump into a 68275 session (2048 garbage db2_tables).
+    Set build_number in Settings to pin a specific build and bypass this.
+
+    Sources (unioned):
+      1. wow_manifest_*.json → "build_number"
+      2. Filename pattern wow_*_NNNNN.json → NNNNN
     """
     import glob
     import re
 
-    # Try manifest first
-    manifests = glob.glob(os.path.join(dumps_dir, "wow_manifest_*.json"))
-    for manifest_path in manifests:
+    builds = set()
+
+    for manifest_path in glob.glob(os.path.join(dumps_dir, "wow_manifest_*.json")):
         try:
             with open(manifest_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            bn = data.get("build_number")
+                bn = json.load(f).get("build_number")
             if bn:
-                msg_info(f"Build number {bn} detected from {os.path.basename(manifest_path)}")
-                return int(bn)
+                builds.add(int(bn))
         except Exception:
             pass
 
-    # Fallback: extract from any wow_*_NNNNN.json filename
     pattern = re.compile(r'wow_\w+_(\d{4,6})\.json$')
     for fname in os.listdir(dumps_dir):
         m = pattern.match(fname)
         if m:
-            bn = int(m.group(1))
-            msg_info(f"Build number {bn} detected from filename {fname}")
-            return bn
+            builds.add(int(m.group(1)))
 
-    return 0
+    if not builds:
+        return 0
+    chosen = max(builds)
+    if len(builds) > 1:
+        msg_info(f"Multiple builds present in {dumps_dir}: {sorted(builds)} - "
+                 f"selecting newest ({chosen}). Set build_number in Settings to override.")
+    else:
+        msg_info(f"Build number {chosen} detected")
+    return chosen
 
 
 _SYSTEM_PREFIXES = {

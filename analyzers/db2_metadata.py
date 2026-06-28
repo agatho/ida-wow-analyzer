@@ -49,6 +49,35 @@ TC_TYPE_CHARS = {
 }
 
 
+# WoWDBDefs schema source of truth: a real DB2 table has a matching <Name>.dbd.
+# Used to reject the CVar/Lua-name garbage the AutoDump db2 extractor emits on
+# some builds (see batch/importer._import_db2_metadata). Kept local (not a shared
+# import) to avoid cross-package coupling, matching db2_loadinfo_codegen's own
+# independent WOWDBDEFS_DIR constant.
+_WOWDBDEFS_DIR = r"c:\dumps\WoWDBDefs\definitions"
+_DBD_NAME_CACHE = None
+
+
+def _valid_db2_table_names():
+    """Set of real DB2 table names from WoWDBDefs (.dbd file stems). Cached.
+
+    Empty set if WoWDBDefs is absent, in which case callers skip name
+    validation and rely on structural (record_size/field_count) sanity only.
+    """
+    global _DBD_NAME_CACHE
+    if _DBD_NAME_CACHE is None:
+        import os
+        names = set()
+        try:
+            for fn in os.listdir(_WOWDBDEFS_DIR):
+                if fn.endswith(".dbd"):
+                    names.add(fn[:-4])
+        except Exception:
+            pass
+        _DBD_NAME_CACHE = names
+    return _DBD_NAME_CACHE
+
+
 def analyze_db2_metadata(session):
     """Scan for DB2Meta structures in the binary and extract field metadata.
 
@@ -94,11 +123,27 @@ def _import_db2_metadata_json(session, meta_file):
         data = json.load(f)
 
     tables = data.get("tables", [])
+    valid_names = _valid_db2_table_names()
+    have_dbd = bool(valid_names)
     count = 0
+    rejected = 0
 
     for table in tables:
         name = table.get("name", "")
         if not name:
+            continue
+
+        record_size = table.get("record_size", 0)
+        field_count = table.get("field_count", 0)
+
+        # Reject the AutoDump db2-extractor garbage (CVar/Lua names, ASCII-as-
+        # dword record_size): require sane structure AND a real WoWDBDefs .dbd.
+        if not (isinstance(record_size, int) and 1 <= record_size <= 65535
+                and isinstance(field_count, int) and 1 <= field_count <= 2000):
+            rejected += 1
+            continue
+        if have_dbd and name not in valid_names:
+            rejected += 1
             continue
 
         meta_rva = table.get("meta_rva")
@@ -114,14 +159,18 @@ def _import_db2_metadata_json(session, meta_file):
             layout_hash=table.get("layout_hash", 0),
             meta_rva=meta_rva,
             meta_ea=meta_ea,
-            field_count=table.get("field_count", 0),
-            record_size=table.get("record_size", 0),
+            field_count=field_count,
+            record_size=record_size,
             index_field=table.get("index_field", -1),
         )
         count += 1
 
     db.commit()
-    msg_info(f"Imported {count} DB2 table definitions")
+    if rejected:
+        msg_info(f"Imported {count} DB2 table definitions (rejected {rejected} "
+                 f"invalid/garbage entries)")
+    else:
+        msg_info(f"Imported {count} DB2 table definitions")
     return count
 
 
@@ -242,6 +291,7 @@ def _scan_for_db2_meta_patterns(session):
     )
 
     db2_name_strings = {}  # name -> string_ea
+    valid_names = _valid_db2_table_names()  # WoWDBDefs allowlist (empty if absent)
 
     msg_info("  Phase 1: Scanning strings for DB2 table names...")
     string_count = 0
@@ -283,6 +333,13 @@ def _scan_for_db2_meta_patterns(session):
                        for p in first_word_prefixes):
                     continue
             db2_name = val
+
+        # Validate against WoWDBDefs: a real table has a <Name>.dbd. This rejects
+        # the CVar/Lua PascalCase strings the heuristic above accepts (the same
+        # garbage that polluted db2_tables via the JSON import). Skipped only when
+        # WoWDBDefs is unavailable (valid_names empty).
+        if valid_names and db2_name and db2_name not in valid_names:
+            db2_name = None
 
         if db2_name and db2_name not in db2_name_strings:
             db2_name_strings[db2_name] = s.ea
