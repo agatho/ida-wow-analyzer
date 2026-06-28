@@ -1413,6 +1413,8 @@ def apply_layouts_to_idb(session):
     has_fixed_at = _check_fixed_at_support()
 
     count = 0
+    failed = 0
+    fail_samples = []
     for layout in layouts:
         class_name = layout["class_name"]
         safe_name = "Recovered" + re.sub(r'[^A-Za-z0-9_]', '_', class_name)
@@ -1429,20 +1431,33 @@ def apply_layouts_to_idb(session):
             # Standard struct declaration with padding
             decl = _build_standard_struct(safe_name, total_size, fields)
 
-        # Parse and apply the type declaration
+        # Parse and apply the type declaration. PT_SIL is critical: without it,
+        # a malformed declaration makes IDA pop a modal "bad declaration" dialog
+        # that BLOCKS a headless/batch run until a human clicks it. With PT_SIL,
+        # a bad decl returns an error silently — we skip it and log a summary.
         try:
             til = ida_typeinf.get_idati()
-            errcode = ida_typeinf.parse_decl(tif, til, decl, ida_typeinf.PT_TYP)
+            errcode = ida_typeinf.parse_decl(
+                tif, til, decl, ida_typeinf.PT_TYP | ida_typeinf.PT_SIL)
             if errcode is not None:
                 # Save the type to the local type library
                 tif.set_named_type(til, safe_name, ida_typeinf.NTF_REPLACE)
                 count += 1
+            else:
+                failed += 1
+                if len(fail_samples) < 8:
+                    fail_samples.append(safe_name)
         except Exception as exc:
-            msg_warn(f"Failed to create type '{safe_name}': {exc}")
+            failed += 1
+            if len(fail_samples) < 8:
+                fail_samples.append(f"{safe_name} ({exc})")
 
     if count:
         msg_info(f"Applied {count} struct types to IDB" +
                  (" (using __fixed/__at)" if has_fixed_at else ""))
+    if failed:
+        msg_warn(f"Skipped {failed} layout struct(s) with unparseable "
+                 f"declarations (samples: {fail_samples})")
     return count
 
 
@@ -1452,9 +1467,11 @@ def _check_fixed_at_support():
         import ida_typeinf
         tif = ida_typeinf.tinfo_t()
         til = ida_typeinf.get_idati()
-        # Try parsing a minimal __fixed struct
+        # Try parsing a minimal __fixed struct (PT_SIL: never pop a dialog if
+        # this IDA build rejects the syntax — just return False).
         test_decl = "struct __fixed(8) _test_fixed_at { __at(0) int x; };"
-        result = ida_typeinf.parse_decl(tif, til, test_decl, ida_typeinf.PT_TYP)
+        result = ida_typeinf.parse_decl(
+            tif, til, test_decl, ida_typeinf.PT_TYP | ida_typeinf.PT_SIL)
         # Clean up test type
         if result is not None:
             ida_typeinf.del_named_type(til, "_test_fixed_at", ida_typeinf.NTF_TYPE)
