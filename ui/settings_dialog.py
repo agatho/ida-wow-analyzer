@@ -1138,6 +1138,34 @@ def _run_single_task(session, task_name):
     return 0
 
 
+# Shared output dir for the Phase-12 codegen tasks (matches
+# analyzers/db2_loadinfo_codegen.OUTPUT_DIR). The _run_codegen_* tasks used to
+# generate code and return only a count, discarding the text; they now persist
+# it here so the batch produces usable artifacts.
+_CODEGEN_OUT_DIR = r"c:\dumps\codegen_out"
+
+
+def _codegen_build(session):
+    return getattr(session.cfg, "build_number", 0) or 0
+
+
+def _write_codegen_output(filename, text):
+    """Persist generated codegen text to _CODEGEN_OUT_DIR. Best-effort: logs and
+    swallows errors so a write failure never aborts the task."""
+    if not text or not text.strip():
+        return None
+    try:
+        os.makedirs(_CODEGEN_OUT_DIR, exist_ok=True)
+        path = os.path.join(_CODEGEN_OUT_DIR, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        msg_info(f"  wrote {path} ({len(text)} bytes)")
+        return path
+    except Exception as exc:
+        msg_warn(f"  could not write {filename}: {exc}")
+        return None
+
+
 def _run_codegen_packets(session):
     """Generate packet scaffolding for all known JAM types with fields."""
     from tc_wow_analyzer.codegen.packet_scaffolding import generate_all_for_jam
@@ -1145,10 +1173,16 @@ def _run_codegen_packets(session):
     rows = db.fetchall(
         "SELECT name FROM jam_types WHERE fields_json IS NOT NULL")
     count = 0
+    parts = []
     for row in rows:
         result = generate_all_for_jam(session, row["name"])
         if result:
             count += 1
+            parts.append(result if isinstance(result, str) else str(result))
+    if parts:
+        _write_codegen_output(
+            f"PacketScaffolding_codegen_{_codegen_build(session)}.h",
+            "\n\n".join(parts) + "\n")
     return count
 
 
@@ -1158,10 +1192,16 @@ def _run_codegen_db2(session):
     db = session.db
     rows = db.fetchall("SELECT name FROM db2_tables")
     count = 0
+    parts = []
     for row in rows:
         code = generate_loadinfo(session, row["name"])
         if code and not code.startswith("//"):
             count += 1
+            parts.append(code)
+    if parts:
+        _write_codegen_output(
+            f"DB2LoadInfo_codegen_{_codegen_build(session)}.h",
+            "\n\n".join(parts) + "\n")
     return count
 
 
@@ -1169,6 +1209,9 @@ def _run_codegen_updatefields(session):
     """Generate UpdateFields code for all object types."""
     from tc_wow_analyzer.codegen.update_fields_gen import generate_all_update_fields
     code = generate_all_update_fields(session)
+    if code:
+        _write_codegen_output(
+            f"UpdateFields_codegen_{_codegen_build(session)}.h", code)
     return len(code.split("struct ")) - 1 if code else 0
 
 
@@ -1177,4 +1220,8 @@ def _run_codegen_opcodes(session):
     from tc_wow_analyzer.codegen.opcode_enums import generate_opcode_enum
     cmsg = generate_opcode_enum(session, "CMSG")
     smsg = generate_opcode_enum(session, "SMSG")
+    combined = "\n".join(x for x in (cmsg, smsg) if x)
+    if combined.strip():
+        _write_codegen_output(
+            f"Opcodes_codegen_{_codegen_build(session)}.h", combined + "\n")
     return cmsg.count("\n") + smsg.count("\n")
