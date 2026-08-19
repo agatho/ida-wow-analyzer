@@ -158,9 +158,33 @@ def run():
     ck("ambiguous type names rejected",
        ods.choose_catalog_family(flat, kv, [0x42, 0x3A]) is None)
 
+    # DIRECTION FILTER: the CMSG twin of a subsystem must NOT win.
+    # Real 69382 failure: client 0x4A (JamWhoEntry/JamClientMOTDStruct) scored
+    # CMSG_CHAT_* over the correct SMSG_WHO/SMSG_MOTD until SMSG-only scoring.
+    kv2 = {}
+    smsg_names = {0x02: ("SMSG_WHO", "SMSG"), 0x03: ("SMSG_MOTD", "SMSG"),
+                  0x05: ("SMSG_EXPECTED_SPAM_RECORDS", "SMSG"),
+                  0x08: ("SMSG_CAUTIONARY_CHAT_MESSAGE", "SMSG"),
+                  0x09: ("SMSG_CAUTIONARY_CHANNEL_MESSAGE", "SMSG")}
+    cmsg_names = {i: ("CMSG_CHAT_THING_%d" % i, "CMSG") for i in range(0x20)}
+    for i, v in smsg_names.items():
+        kv2[(0x47 << 16) | i] = v
+    for i, v in cmsg_names.items():
+        kv2[(0x2B << 16) | i] = v
+    who = {0x02: ["JamWhoEntry"], 0x03: ["JamClientMOTDStruct"],
+           0x05: ["JamClientSpamRecord"], 0x08: ["JamChatMessage"],
+           0x09: ["JamChatChannelMessage"]}
+    h47, _ = ods.score_client_family(who, kv2, 0x47)
+    h2b, t2b = ods.score_client_family(who, kv2, 0x2B)
+    ck("SMSG family scores on real evidence", h47 >= 3)
+    ck("CMSG twin is filtered out entirely", t2b == 0 and h2b == 0)
+    pick2 = ods.choose_catalog_family(who, kv2, [0x47, 0x2B])
+    ck("direction filter picks the SMSG family", pick2 and pick2["family"] == 0x47)
+
     # Too little evidence -> refuse (min_tested guard).
     ck("insufficient evidence rejected",
-       ods.choose_catalog_family({0x00: ["ClientSetupCurrencyRecord"]},
+       ods.choose_catalog_family({0x00: ["ClientSetupCurrencyRecord"],
+                                  0x01: ["JamEarnedAchievement"]},
                                  kv, [0x42, 0x3A]) is None)
 
     ok = all(p for _, p in checks)

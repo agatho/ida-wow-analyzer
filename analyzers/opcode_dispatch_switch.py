@@ -546,17 +546,28 @@ def type_tokens(type_names):
     return out
 
 
-def score_client_family(idx_types, known_values, catalog_family):
+def score_client_family(idx_types, known_values, catalog_family,
+                        direction="SMSG"):
     """How well do the client's own type names match a catalog family's names?
 
     idx_types: {family_index: [jam type name, ...]} taken from the client.
     Returns (hits, tested) — indices where at least one evidence token agrees.
+
+    DIRECTION FILTER (measured 2026-08-19, do not remove): these dispatchers are
+    the RECEIVE path, so only SMSG entries are legitimate candidates. Without the
+    filter the CMSG twin of a subsystem wins on generic tokens — client 0x4A
+    (JamWhoEntry/JamClientMOTDStruct) scored CMSG_CHAT_* (catalog 0x2B) over the
+    correct SMSG_WHO / SMSG_MOTD (catalog 0x47), and client 0x58 (JamCliHouse)
+    scored CMSG_HOUSING_SVCS_* over SMSG_HOUSING_SVCS_*. Both wrong by one
+    direction, both silently plausible.
     """
     hits = tested = 0
     base = catalog_family << 16
     for idx, types in (idx_types or {}).items():
         entry = known_values.get(base | idx)
         if not entry:
+            continue
+        if direction and len(entry) > 1 and entry[1] != direction:
             continue
         tested += 1
         if name_tokens(entry[0]) & type_tokens(types):
@@ -565,7 +576,8 @@ def score_client_family(idx_types, known_values, catalog_family):
 
 
 def choose_catalog_family(idx_types, known_values, candidates,
-                          min_tested=8, min_rate=0.12, min_margin=2.5):
+                          min_tested=4, min_rate=0.25, min_margin=1.8,
+                          min_hits=3, direction="SMSG"):
     """Pick the catalog family a client family really is — or None.
 
     Deliberately conservative: the winner must clear an absolute match rate AND
@@ -574,7 +586,8 @@ def choose_catalog_family(idx_types, known_values, candidates,
     """
     scored = []
     for fam in candidates:
-        hits, tested = score_client_family(idx_types, known_values, fam)
+        hits, tested = score_client_family(idx_types, known_values, fam,
+                                           direction=direction)
         if tested >= min_tested:
             scored.append((hits / float(tested), hits, tested, fam))
     if not scored:
@@ -582,7 +595,7 @@ def choose_catalog_family(idx_types, known_values, candidates,
     scored.sort(reverse=True)
     rate, hits, tested, fam = scored[0]
     runner = scored[1][0] if len(scored) > 1 else 0.0
-    if rate < min_rate:
+    if rate < min_rate or hits < min_hits:
         return None
     if runner > 0 and rate < runner * min_margin:
         return None
