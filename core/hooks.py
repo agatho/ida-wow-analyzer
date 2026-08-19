@@ -7,6 +7,8 @@ import ida_idp
 import ida_kernwin
 import idaapi
 
+from tc_wow_analyzer.core.utils import msg_info, msg_warn
+
 
 class TcIDBHooks(ida_idp.IDB_Hooks):
     """Hooks into IDB modification events to track renames, type changes, etc."""
@@ -80,45 +82,53 @@ class TcUIHooks(ida_kernwin.UI_Hooks):
 
 
 class TcHexRaysHooks(object):
-    """Hooks into Hex-Rays decompiler events for auto-annotation.
-    Uses the callback-based API since plugmod hooks differ between IDA versions."""
+    """Hex-Rays integration.
+
+    This used to be a self-contained hook whose callback was an empty
+    ``return 0`` placeholder, while the real implementation —
+    ``ui/hexrays_annotations.HexRaysAnnotator``, ~150 lines of opcode / JAM /
+    Lua annotation plus the pseudocode popup — was never instantiated
+    anywhere. It now delegates to that class, gated on the
+    ``enable_hexrays_annotations`` setting (which previously did nothing).
+    """
 
     def __init__(self, session):
         self._session = session
         self._installed = False
+        self._annotator = None
 
     def install(self):
-        """Install the Hex-Rays callback if the decompiler is available."""
+        """Install the annotator if the decompiler is available and enabled."""
         if self._installed:
             return
         try:
-            import ida_hexrays
-            if ida_hexrays.init_hexrays_plugin():
-                ida_hexrays.install_hexrays_callback(self._callback)
-                self._installed = True
+            enabled = self._session.cfg.get("enable_hexrays_annotations",
+                                            default=True)
         except Exception:
-            pass
+            enabled = True
+        if not enabled:
+            msg_info("Hex-Rays annotations disabled in settings")
+            return
+        try:
+            from tc_wow_analyzer.ui.hexrays_annotations import HexRaysAnnotator
+            self._annotator = HexRaysAnnotator(self._session)
+            self._annotator.install()
+            self._installed = True
+        except Exception as exc:
+            msg_warn(f"Hex-Rays annotations unavailable: {exc}")
+            self._annotator = None
 
     def remove(self):
         """Remove the Hex-Rays callback."""
         if not self._installed:
             return
         try:
-            import ida_hexrays
-            ida_hexrays.remove_hexrays_callback(self._callback)
-            self._installed = False
+            if self._annotator is not None:
+                self._annotator.remove()
         except Exception:
             pass
-
-    @staticmethod
-    def _callback(event, *args):
-        """Static callback — Hex-Rays events arrive here.
-        We can annotate pseudocode with WoW-specific context."""
-        # Placeholder for future annotation logic:
-        # - Replace magic numbers with enum names
-        # - Annotate virtual calls with class::method names
-        # - Show DB2 field names for accessor calls
-        return 0
+        self._annotator = None
+        self._installed = False
 
 
 class HookManager:

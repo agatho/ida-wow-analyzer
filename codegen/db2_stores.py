@@ -87,9 +87,12 @@ def _generate_skeleton_loadinfo(table_name, row):
     type_chars = "i" * field_count
     array_sizes = ", ".join(["1"] * field_count)
 
-    lines.append(f'static char const* const types = "{type_chars}";')
+    # Same symbol names as the full path below (Types / ArraySizes). The
+    # skeleton used to emit lower-case `types` / `arraySizes`, so a header that
+    # mixed both kinds of table did not compile.
+    lines.append(f'    static constexpr char const* Types = "{type_chars}";')
     if field_count > 0:
-        lines.append(f'static uint8 const arraySizes[{field_count}] = '
+        lines.append(f'    static constexpr uint8 ArraySizes[{field_count}] = '
                      f'{{{array_sizes}}};')
 
     return "\n".join(lines) + "\n"

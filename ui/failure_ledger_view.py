@@ -18,6 +18,20 @@ _TITLE = "TC WoW Failure Ledger"
 
 
 def _db_path():
+    """Knowledge DB path.
+
+    Goes through the config so an explicit ``db_path`` override and the
+    per-build suffix are both honoured. Deriving it straight from the IDB name
+    meant this view opened a different (or no) database than the rest of the
+    plugin and reported "knowledge DB not found".
+    """
+    try:
+        from tc_wow_analyzer.core.config import cfg
+        path = cfg.db_path
+        if path:
+            return path
+    except Exception:
+        pass
     try:
         idb = idc.get_idb_path()
         if idb:

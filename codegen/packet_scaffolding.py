@@ -223,7 +223,9 @@ def generate_read_method(session, jam_name):
     lines.append("{")
 
     for field in fields:
-        ftype = field["type"]
+        # .get(), like the struct emitter above: a row from an older DB or an
+        # external producer without a "type" key raised KeyError here.
+        ftype = field.get("type", "uint32")
         fname = field.get("name", f"Field{field.get('index', 0)}")
 
         if ftype in ("bits", "bit"):
@@ -257,7 +259,7 @@ def generate_write_method(session, jam_name):
     lines.append("{")
 
     for field in fields:
-        ftype = field["type"]
+        ftype = field.get("type", "uint32")
         fname = field.get("name", f"Field{field.get('index', 0)}")
 
         if ftype in ("bits", "bit"):
@@ -317,9 +319,15 @@ def _generate_struct_from_tc(jam_name, tc_name, fields, direction):
         typ = f.get("type", "uint32")
         name = f.get("name", f"Field{f.get('index', 0)}")
         arr = f.get("array")
-        suffix = f"[{arr}]" if isinstance(arr, str) else ("[]" if arr else "")
-        default = _get_default(typ)
-        lines.append(f"    {typ} {name}{suffix}{default};")
+        if isinstance(arr, str) and arr:
+            # fixed-size array with a known bound
+            lines.append(f"    {typ} {name}[{arr}]{_get_default(typ)};")
+        elif arr:
+            # Unknown bound. `Type Name[];` does not compile — emit a vector,
+            # which is what TrinityCore uses for variable-length packet fields.
+            lines.append(f"    std::vector<{typ}> {name};")
+        else:
+            lines.append(f"    {typ} {name}{_get_default(typ)};")
     lines.append("};")
     return "\n".join(lines) + "\n"
 

@@ -58,10 +58,14 @@ class WoWDashboard(ida_kernwin.Choose):
         self._append_failures(db)
 
         # Opcodes section
-        cmsg_count = len(db.fetchall(
-            "SELECT 1 FROM opcodes WHERE direction = 'CMSG'"))
-        smsg_count = len(db.fetchall(
-            "SELECT 1 FROM opcodes WHERE direction = 'SMSG'"))
+        # COUNT(*), not len(fetchall(...)): the old form pulled every opcode
+        # row into Python (~4000 rows, twice) purely to take its length.
+        _row = db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM opcodes WHERE direction = 'CMSG'")
+        cmsg_count = _row["cnt"] if _row else 0
+        _row = db.fetchone(
+            "SELECT COUNT(*) AS cnt FROM opcodes WHERE direction = 'SMSG'")
+        smsg_count = _row["cnt"] if _row else 0
         self._items.append([
             "OPCODES",
             f"{cmsg_count} CMSG | {smsg_count} SMSG",

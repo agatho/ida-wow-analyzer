@@ -220,10 +220,18 @@ def show_llm_run(session):
     msg_info(f"Starting LLM task: {task_label}")
     msg_info(f"Using: {config.selected_provider} / {config.selected_model}")
 
-    # Run the task
+    # Run the task inside a wait box. Without one the call was fully
+    # synchronous and blocked IDA's UI, so Ctrl+Shift+X (Cancel LLM Processing)
+    # could not fire — the cancel hotkey was unreachable exactly while the
+    # long-running job it cancels was in progress.
     try:
         from tc_wow_analyzer.ui.settings_dialog import _run_single_task
-        count = _run_single_task(session, task_key)
+        ida_kernwin.show_wait_box(
+            f"{task_label}\nCtrl+Shift+X cancels, or press Cancel below.")
+        try:
+            count = _run_single_task(session, task_key)
+        finally:
+            ida_kernwin.hide_wait_box()
         msg_info(f"LLM task complete: {count} items processed")
     except Exception as e:
         msg_error(f"LLM task failed: {e}")

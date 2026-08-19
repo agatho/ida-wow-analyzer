@@ -12,28 +12,39 @@ from tc_wow_analyzer.core.utils import (
 )
 
 
-# Table schema for binary cfunc blobs
+# Table schema for binary cfunc blobs.
+#
+# `serialized` is NULLable on purpose: IDA builds where cfunc_t.serialize() is
+# unavailable produce pseudocode but no blob. With NOT NULL the INSERT raised
+# IntegrityError, which the caller swallowed with `except Exception: pass` —
+# so the cache stayed permanently empty and nobody noticed.
+#
+# The table is also declared in core/db.py SCHEMA_SQL; this statement stays as a
+# safety net for databases created before that.
 _CACHE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS cfunc_cache (
     ea INTEGER PRIMARY KEY,
     func_hash TEXT NOT NULL,
-    serialized BLOB NOT NULL,
+    serialized BLOB,
     pseudocode TEXT,
     created_at REAL
 );
 """
 
-_cache_table_created = False
+# Keyed by the connection object, NOT a plain bool: a module-level flag stayed
+# True after session.shutdown(), so the table was never created in the NEXT
+# database and every read raised "no such table: cfunc_cache".
+_cache_table_created = set()
 
 
 def _ensure_cache_table(db):
-    """Create the cfunc_cache table if it doesn't exist."""
-    global _cache_table_created
-    if _cache_table_created:
+    """Create the cfunc_cache table if it doesn't exist (per connection)."""
+    marker = id(getattr(db, "conn", db))
+    if marker in _cache_table_created:
         return
     db.execute(_CACHE_TABLE_SQL)
     db.commit()
-    _cache_table_created = True
+    _cache_table_created.add(marker)
 
 
 def _compute_func_hash(ea):

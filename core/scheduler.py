@@ -354,28 +354,55 @@ def _start_work_session():
     msg_info(f"  Rate limit: {_state.config.rate_limit}s")
     msg_info(f"  Apply to IDB: {_state.config.apply_to_idb}")
 
-    # Execute on IDA's main thread (required for IDA API calls)
-    def _run_on_main():
+    # The loop itself runs HERE, on the watchdog thread; only the individual
+    # IDA/DB touches are marshalled to the main thread (see _sync below).
+    #
+    # It used to be one single execute_sync(MFF_WRITE) wrapping the ENTIRE
+    # session — which does not return until every handler is done, including a
+    # time.sleep(rate_limit) after each one. IDA's UI was frozen for the whole
+    # overnight window, so `screen_ea_changed` could not fire
+    # (`pause_on_user_activity` was dead), the window-end check never ran, and
+    # stop_scheduler() could not interrupt it.
+    try:
+        _execute_scheduled_tasks()
+    except Exception as e:
+        msg_error(f"Scheduler work session error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        with _state.lock:
+            _state.working = False
+            _state.last_run_end = time.time()
+
+
+def _sync(func, *args, **kwargs):
+    """Run *func* on IDA's main thread and return its result.
+
+    Both the IDA API and the SQLite connection belong to the main thread, so
+    every touch of either goes through here. Kept deliberately fine-grained:
+    one call per handler, never one call per session.
+    """
+    box = {}
+
+    def wrapper():
         try:
-            _execute_scheduled_tasks()
-        except Exception as e:
-            msg_error(f"Scheduler work session error: {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            with _state.lock:
-                _state.working = False
-                _state.last_run_end = time.time()
+            box["value"] = func(*args, **kwargs)
+        except Exception as exc:  # re-raised on the caller's thread
+            box["error"] = exc
         return 1
 
-    idaapi.execute_sync(_run_on_main, idaapi.MFF_WRITE)
+    idaapi.execute_sync(wrapper, idaapi.MFF_WRITE)
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def _execute_scheduled_tasks():
     """Run the configured tasks within the time window.
 
-    This runs on the IDA main thread.  It checks the time window and
-    user activity between each handler to allow clean interruption.
+    Runs on the WATCHDOG thread. IDA and DB access is marshalled to the main
+    thread per handler via _sync(), so the UI stays responsive and the window
+    /user-activity checks between handlers actually get a chance to run.
     """
     session = _state.session
     if not session or not session.db:
@@ -442,14 +469,16 @@ def _run_llm_decompiler_incremental(session, cfg: SchedulerConfig) -> int:
     )
 
     db = session.db
-    existing = db.kv_get(KV_KEY) or {}
+    existing = _sync(db.kv_get, KV_KEY) or {}
     existing_results = existing.get("results", {})
 
-    # Get all CMSG handlers not yet processed
-    handlers = db.fetchall(
-        "SELECT * FROM opcodes WHERE direction = 'CMSG' "
-        "AND handler_ea IS NOT NULL ORDER BY internal_index"
-    )
+    # Get all CMSG handlers not yet processed.
+    # handler_ea > 0, not just NOT NULL: 0 is a valid stored value and used to
+    # be handed to the decompiler as if it were a real address.
+    handlers = _sync(db.fetchall,
+                     "SELECT * FROM opcodes WHERE direction = 'CMSG' "
+                     "AND handler_ea IS NOT NULL AND handler_ea > 0 "
+                     "ORDER BY internal_index")
 
     if not handlers:
         msg_warn("Scheduler: no CMSG handlers found")
@@ -495,7 +524,9 @@ def _run_llm_decompiler_incremental(session, cfg: SchedulerConfig) -> int:
         msg(f"  Scheduler [{i+1}/{len(todo)}] {tc_name}")
 
         try:
-            result = semantically_decompile_function(
+            # One main-thread hop per handler, not one for the whole session.
+            result = _sync(
+                semantically_decompile_function,
                 session, handler_ea,
                 apply_to_idb_flag=cfg.apply_to_idb,
                 rate_limit=cfg.rate_limit,
@@ -521,13 +552,13 @@ def _run_llm_decompiler_incremental(session, cfg: SchedulerConfig) -> int:
 
         # Save every 5 handlers
         if (processed + errors) % 5 == 0 and (processed + errors) > 0:
-            _save_llm_results(db, existing_results, processed)
+            _sync(_save_llm_results, db, existing_results, processed)
 
-        # Rate limit
+        # Rate limit — on THIS thread, so the UI keeps running through it.
         time.sleep(cfg.rate_limit)
 
     # Final save
-    _save_llm_results(db, existing_results, processed)
+    _sync(_save_llm_results, db, existing_results, processed)
 
     return processed
 

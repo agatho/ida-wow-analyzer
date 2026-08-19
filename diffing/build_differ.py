@@ -62,12 +62,19 @@ def diff_builds(session, old_build_dir, new_build_dir=None):
             new_func = new_functions[name]
             confidence = 1.0 if old_func.get("size") == new_func.get("size") else 0.9
 
+            # old_func carries an RVA (the old build's image base is not the
+            # current one); store it as an RVA-derived EA against the OLD base
+            # if we know it, else keep the RVA. Either way it is now explicit
+            # instead of an EA-shaped value that was really an RVA.
+            old_ea = old_func.get("ea")
+            if old_ea is None:
+                old_ea = old_func.get("rva")
             db.execute(
                 """INSERT OR REPLACE INTO diffing
                    (old_ea, new_ea, match_type, confidence,
                     old_build, new_build)
                    VALUES (?, ?, 'name_match', ?, ?, ?)""",
-                (old_func["ea"], new_func["ea"], confidence,
+                (old_ea, new_func["ea"], confidence,
                  old_build, new_build))
             matched += 1
 
@@ -117,7 +124,10 @@ def _load_functions(build_dir, build_number):
                     if isinstance(rva, str):
                         rva = int(rva, 16)
                     functions[name] = {
-                        "ea": rva,  # use RVA as ea for old builds
+                        # RVA, NOT an EA. The `diffing` table stores an EA in
+                        # new_ea, so mixing the two here made old_ea/new_ea
+                        # incomparable. Callers must rebase explicitly.
+                        "ea": None,
                         "rva": rva,
                         "name": name,
                         "size": func.get("size", 0),
@@ -197,11 +207,14 @@ def _diff_simhash(session, old_build_dir, old_build, new_build):
                     if isinstance(new_rva, str):
                         new_rva = int(new_rva, 16)
 
-                    # Don't overwrite higher-confidence matches
+                    # Don't overwrite higher-confidence matches.
+                    # The PK is (old_ea, new_ea), so selecting on new_ea alone
+                    # never matched the row INSERT OR REPLACE would replace —
+                    # every re-run added another duplicate for the same new_ea.
                     existing = db.fetchone(
                         "SELECT confidence FROM diffing "
-                        "WHERE new_ea = ?",
-                        (session.cfg.rva_to_ea(new_rva),))
+                        "WHERE old_ea = ? AND new_ea = ?",
+                        (old_rva, session.cfg.rva_to_ea(new_rva)))
                     if not existing or existing["confidence"] < 0.8:
                         db.execute(
                             """INSERT OR REPLACE INTO diffing
@@ -218,13 +231,27 @@ def _diff_simhash(session, old_build_dir, old_build, new_build):
 
 
 def _detect_build_number(build_dir):
-    """Detect build number from directory contents."""
+    """Detect the build number from a directory's AutoDump filenames.
+
+    Two fixes over the original: it no longer raises FileNotFoundError on a
+    missing directory (the only caller passes a user-supplied path), and it
+    picks the HIGHEST build rather than whichever file the filesystem happened
+    to list first — the same non-determinism batch/importer.py already fixed.
+    """
     import re
-    for fname in os.listdir(build_dir):
-        m = re.search(r'_(\d{5,6})\.(json|txt)', fname)
-        if m:
-            return int(m.group(1))
-    return 0
+    if not build_dir or not os.path.isdir(build_dir):
+        msg_error(f"Build directory not found: {build_dir}")
+        return 0
+    builds = set()
+    try:
+        for fname in os.listdir(build_dir):
+            m = re.search(r'_(\d{5,6})\.(json|txt)', fname)
+            if m:
+                builds.add(int(m.group(1)))
+    except OSError as exc:
+        msg_error(f"Could not list {build_dir}: {exc}")
+        return 0
+    return max(builds) if builds else 0
 
 
 def get_diff_report(session):

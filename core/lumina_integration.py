@@ -96,15 +96,33 @@ def pull_metadata(db, ea_list=None, progress_cb=None):
                         md = client.pull_md(ea)
                         if md and md.name:
                             stats["matched"] += 1
-                            # Store in our DB
+                            # `likelihood` is Lumina's own scale; `confidence`
+                            # is documented as 0-100, so clamp rather than
+                            # storing an out-of-range value.
+                            likelihood = getattr(md, "likelihood", 50)
+                            try:
+                                confidence = max(0, min(100, int(likelihood)))
+                            except (TypeError, ValueError):
+                                confidence = 50
                             if db:
                                 db.upsert_function(
                                     ea,
                                     name=md.name,
                                     system="lumina",
-                                    confidence=md.likelihood if hasattr(md, 'likelihood') else 50
+                                    confidence=confidence,
                                 )
-                            stats["renamed"] += 1
+                            # Actually rename in the IDB. stats["renamed"] was
+                            # incremented after a DB write alone — there was no
+                            # set_name call anywhere, so the counter reported
+                            # renames that had not happened.
+                            try:
+                                import ida_name
+                                if ida_name.set_name(
+                                        ea, md.name,
+                                        ida_name.SN_NOCHECK | ida_name.SN_FORCE):
+                                    stats["renamed"] += 1
+                            except Exception:
+                                pass
                     except Exception:
                         continue
                 client.disconnect()

@@ -23,6 +23,7 @@ class PluginSession:
         self.cfg = cfg
         self.db = None
         self.hooks = None
+        self.mcp_tools = None
         self._actions = []
         self._initialized = False
         self._init_time = 0
@@ -38,14 +39,30 @@ class PluginSession:
         # Re-load config now that the IDB is available (the config singleton
         # may have been created before the IDB was fully loaded).
         self.cfg._load()
+        self.cfg.invalidate_build_cache()
 
         # Record the active build so utils' input-path helpers resolve the
         # correct `_<build>.json` files (de-hardcodes the old _67186 constants).
+        build = 0
         try:
             from tc_wow_analyzer.core.utils import set_build_number
-            set_build_number(self.cfg.build_number)
+            build = self.cfg.build_number
+            set_build_number(build)
         except Exception:
             pass
+
+        if build:
+            try:
+                from tc_wow_analyzer.core.build_version import version_string
+                msg_info(f"Build: {version_string(build)} "
+                         f"(image base 0x{self.cfg.image_base:X})")
+            except Exception:
+                msg_info(f"Build: {build}")
+        else:
+            msg_error("Build number could NOT be determined. Build-scoped "
+                      "lookups are disabled: AutoDump inputs, per-build yields "
+                      "and regression detection will not work. Add a builds[] "
+                      "entry whose image_base matches this IDB.")
 
         # Always register UI actions first so menus work even if DB fails
         self._register_actions()
@@ -69,6 +86,21 @@ class PluginSession:
             self._initialized = True
             return
 
+        # Register the build this database describes. The `builds` table had
+        # three readers and no writer, so every cross-build analyzer always took
+        # its fallback path.
+        if build:
+            try:
+                import ida_nalt
+                binary_path = ida_nalt.get_input_file_path()
+            except Exception:
+                binary_path = None
+            try:
+                self.db.record_build(build, image_base=self.cfg.image_base,
+                                     binary_path=binary_path)
+            except Exception as exc:
+                msg_warn(f"Could not record build metadata: {exc}")
+
         # Log stats
         stats = self.db.get_stats()
         total = sum(stats.values())
@@ -81,8 +113,25 @@ class PluginSession:
         self.hooks = HookManager(self)
         self.hooks.install()
 
-        # 3. Auto-start scheduler if configured
+        # 3. Register the WoW MCP tool set (16 tools). `mcp/wow_tools.py` had
+        # no caller at all, so `enable_mcp_tools` in Settings toggled nothing.
+        self.mcp_tools = None
+        if self.cfg.get("enable_mcp_tools", default=False):
+            try:
+                from tc_wow_analyzer.mcp.wow_tools import register_wow_tools
+                self.mcp_tools = register_wow_tools(self)
+                count = len(getattr(self.mcp_tools, "_tools", {}) or {})
+                msg_info(f"MCP: registered {count} WoW tools")
+            except Exception as exc:
+                msg_warn(f"MCP tool registration failed: {exc}")
+
+        # 4. Auto-start scheduler if configured
         self._start_scheduler_if_configured()
+
+        # 5. Auto-run analysis if the user asked for it. This setting was
+        # written by the Settings dialog and read by nothing.
+        if self.cfg.get("auto_run_analysis", default=False):
+            self._auto_run_analysis()
 
         self._init_time = time.time() - start
         self._initialized = True
@@ -94,6 +143,33 @@ class PluginSession:
             msg("  First time? Use 'TC WoW: Settings...' to configure paths,")
             msg("  then 'TC WoW: Run Tasks...' to import data and run analysis.")
             msg("")
+
+    def _auto_run_analysis(self):
+        """Kick off a full analyzer pass right after initialisation.
+
+        Deliberately deferred through a timer: initialize() runs inside IDA's
+        load path, and a multi-hour synchronous run there would look like a
+        hang. In batch mode the caller drives the pipeline itself, so skip.
+        """
+        try:
+            if idaapi.cvar.batch:
+                return
+        except Exception:
+            pass
+
+        def _kick():
+            try:
+                msg_info("auto_run_analysis is enabled — starting analyzers")
+                from tc_wow_analyzer.analyzers import run_all_analyzers
+                run_all_analyzers(self)
+            except Exception as exc:
+                msg_error(f"Auto-run failed: {exc}")
+            return -1
+
+        try:
+            idaapi.register_timer(3000, _kick)
+        except Exception as exc:
+            msg_warn(f"Could not schedule auto-run: {exc}")
 
     def _start_scheduler_if_configured(self):
         """Auto-start the scheduler if it's enabled in config."""
@@ -118,6 +194,15 @@ class PluginSession:
             pass
 
         msg("Shutting down...")
+
+        # Stop the web dashboard. `stop_web_dashboard()` existed but had no
+        # caller, so the HTTP thread and its socket outlived every reload; the
+        # next start bound port+1 while the old server kept serving a stale DB.
+        try:
+            from tc_wow_analyzer.ui.web_dashboard import stop_web_dashboard
+            stop_web_dashboard()
+        except Exception as exc:
+            msg_warn(f"Web dashboard stop failed: {exc}")
 
         # Remove hooks
         if self.hooks:
@@ -187,13 +272,31 @@ class PluginSession:
              "Ctrl+Shift+E", self._action_extraction_monitor),
             ("tc_wow:failure_ledger", "Failure Ledger",
              "", self._action_failure_ledger),
+            # Ctrl+Shift+D was taken by the Web Dashboard above, so this
+            # action -- the one CLAUDE.md documents under that shortcut -- was
+            # never reachable by keyboard. Moved to Ctrl+Shift+F.
             ("tc_wow:resolve_fdid", "Resolve FileDataID at Cursor",
-             "Ctrl+Shift+D", self._action_resolve_fdid),
+             "Ctrl+Shift+F", self._action_resolve_fdid),
             ("tc_wow:llm_cancel", "Cancel LLM Processing",
              "Ctrl+Shift+X", self._action_llm_cancel),
+            # Attached to the pseudocode popup by ui/hexrays_annotations.py,
+            # which referenced it without it ever being registered -- so the
+            # popup entry never appeared and ui/wire_format_viewer.py (176
+            # lines) was unreachable from the UI entirely.
+            ("tc_wow:show_wire_format", "Show Wire Format",
+             "", self._action_show_wire_format),
         ]
 
+        seen_hotkeys = {}
+        failed = []
         for action_name, label, hotkey, handler in actions:
+            if hotkey:
+                clash = seen_hotkeys.get(hotkey)
+                if clash:
+                    msg_warn(f"Hotkey {hotkey} claimed by both {clash} and "
+                             f"{action_name} -- the second one will not fire")
+                else:
+                    seen_hotkeys[hotkey] = action_name
             action_desc = idaapi.action_desc_t(
                 action_name,
                 label,
@@ -203,8 +306,16 @@ class PluginSession:
             )
             if idaapi.register_action(action_desc):
                 self._actions.append((action_name, label, hotkey))
+            else:
+                # Used to be swallowed: the action then silently vanished from
+                # every menu and context menu with no trace in the log.
+                failed.append(action_name)
 
         msg_info(f"Registered {len(self._actions)} UI actions")
+        if failed:
+            msg_warn(f"Failed to register {len(failed)} actions: "
+                     f"{', '.join(failed)} (already registered from a previous "
+                     f"session? run the plugin with arg=1 to hot-reload cleanly)")
 
     def _unregister_actions(self):
         """Unregister all UI actions."""
@@ -483,6 +594,20 @@ class PluginSession:
             request_cancel()
         except Exception as e:
             msg_error(f"Cancel error: {e}")
+
+    def _action_show_wire_format(self):
+        """Show the recovered wire format for the handler under the cursor."""
+        if not self.db:
+            msg_error("No database loaded")
+            return
+        try:
+            from tc_wow_analyzer.ui.wire_format_viewer import show_wire_format
+            # jam_name=None -> the viewer resolves it from the cursor position.
+            show_wire_format(self)
+        except Exception as e:
+            msg_error(f"Wire format error: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 class _ActionHandler(idaapi.action_handler_t):

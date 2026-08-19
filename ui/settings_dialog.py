@@ -290,6 +290,7 @@ _TASK_REGISTRY = [
     ("lumina_push",             "Lumina: Push Named Functions",          0, ["idb_enrichment"]),
     ("apply_struct_types",      "Apply Struct Types to IDB (__fixed/__at)", 9, ["object_layout"]),
     ("build_decompile_cache",   "Build Decompilation Cache (headless)", 0, []),
+    ("build_diff",              "Diff vs Previous Build (archived)",   12, []),
     # Utility (standalone)
     ("web_dashboard",           "Launch Web Analysis Dashboard",        0, []),
 ]
@@ -832,11 +833,16 @@ def _execute_tasks(session, tasks, batch_name="Custom"):
     # Summary
     msg_info("=" * 50)
     msg_info("Task execution summary:")
+    # isinstance guard, like line ~785. Without it a task returning None
+    # raised TypeError right at the end of a run that may have taken hours.
+    def _ok(value):
+        return isinstance(value, int) and value >= 0
+
     for name, count in results.items():
-        status = f"{count} items" if count >= 0 else "FAILED"
+        status = f"{count} items" if _ok(count) else "FAILED"
         msg_info(f"  {name}: {status}")
-    total_ok = sum(1 for v in results.values() if v >= 0)
-    total_fail = sum(1 for v in results.values() if v < 0)
+    total_ok = sum(1 for v in results.values() if _ok(v))
+    total_fail = len(results) - total_ok
     msg_info(f"Done: {total_ok} succeeded, {total_fail} failed")
     msg_info("=" * 50)
 
@@ -1114,6 +1120,9 @@ def _run_single_task(session, task_name):
     if task_name == "codegen_opcodes":
         return _run_codegen_opcodes(session)
 
+    if task_name == "build_diff":
+        return _run_build_diff(session)
+
     # IDA 9.3+ Enhancement tasks
     if task_name == "lumina_pull":
         from tc_wow_analyzer.core.lumina_integration import pull_metadata
@@ -1138,90 +1147,63 @@ def _run_single_task(session, task_name):
     return 0
 
 
-# Shared output dir for the Phase-12 codegen tasks (matches
-# analyzers/db2_loadinfo_codegen.OUTPUT_DIR). The _run_codegen_* tasks used to
-# generate code and return only a count, discarding the text; they now persist
-# it here so the batch produces usable artifacts.
-_CODEGEN_OUT_DIR = r"c:\dumps\codegen_out"
-
-
-def _codegen_build(session):
-    return getattr(session.cfg, "build_number", 0) or 0
-
-
-def _write_codegen_output(filename, text):
-    """Persist generated codegen text to _CODEGEN_OUT_DIR. Best-effort: logs and
-    swallows errors so a write failure never aborts the task."""
-    if not text or not text.strip():
-        return None
-    try:
-        os.makedirs(_CODEGEN_OUT_DIR, exist_ok=True)
-        path = os.path.join(_CODEGEN_OUT_DIR, filename)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(text)
-        msg_info(f"  wrote {path} ({len(text)} bytes)")
-        return path
-    except Exception as exc:
-        msg_warn(f"  could not write {filename}: {exc}")
-        return None
+# ─── Phase-12 codegen ────────────────────────────────────────────
+#
+# These used to be four private helpers here that generated text and wrote it
+# to a hardcoded c:\dumps\codegen_out. That meant:
+#   * headless runs produced no codegen at all (the GUI was the only caller);
+#   * `generate_all_for_jam` returns a DICT, and the writer used str(result),
+#     so the .h file contained a Python repr instead of C++;
+#   * placeholder text ("// No CMSG opcodes found") counted as content, so
+#     empty headers were written and reported as success;
+#   * every JAM type was generated as CMSG, so no SMSG ever got a Write().
+# All four now delegate to codegen/writer.py, which batch/headless.py step 7
+# uses as well, so the GUI and headless paths cannot drift apart again.
 
 
 def _run_codegen_packets(session):
-    """Generate packet scaffolding for all known JAM types with fields."""
-    from tc_wow_analyzer.codegen.packet_scaffolding import generate_all_for_jam
-    db = session.db
-    rows = db.fetchall(
-        "SELECT name FROM jam_types WHERE fields_json IS NOT NULL")
-    count = 0
-    parts = []
-    for row in rows:
-        result = generate_all_for_jam(session, row["name"])
-        if result:
-            count += 1
-            parts.append(result if isinstance(result, str) else str(result))
-    if parts:
-        _write_codegen_output(
-            f"PacketScaffolding_codegen_{_codegen_build(session)}.h",
-            "\n\n".join(parts) + "\n")
-    return count
+    from tc_wow_analyzer.codegen.writer import run_codegen_packets
+    return run_codegen_packets(session)
 
 
 def _run_codegen_db2(session):
-    """Generate DB2 store code for all known tables."""
-    from tc_wow_analyzer.codegen.db2_stores import generate_loadinfo
-    db = session.db
-    rows = db.fetchall("SELECT name FROM db2_tables")
-    count = 0
-    parts = []
-    for row in rows:
-        code = generate_loadinfo(session, row["name"])
-        if code and not code.startswith("//"):
-            count += 1
-            parts.append(code)
-    if parts:
-        _write_codegen_output(
-            f"DB2LoadInfo_codegen_{_codegen_build(session)}.h",
-            "\n\n".join(parts) + "\n")
-    return count
+    from tc_wow_analyzer.codegen.writer import run_codegen_db2
+    return run_codegen_db2(session)
 
 
 def _run_codegen_updatefields(session):
-    """Generate UpdateFields code for all object types."""
-    from tc_wow_analyzer.codegen.update_fields_gen import generate_all_update_fields
-    code = generate_all_update_fields(session)
-    if code:
-        _write_codegen_output(
-            f"UpdateFields_codegen_{_codegen_build(session)}.h", code)
-    return len(code.split("struct ")) - 1 if code else 0
+    from tc_wow_analyzer.codegen.writer import run_codegen_updatefields
+    return run_codegen_updatefields(session)
 
 
 def _run_codegen_opcodes(session):
-    """Generate opcode enum entries."""
-    from tc_wow_analyzer.codegen.opcode_enums import generate_opcode_enum
-    cmsg = generate_opcode_enum(session, "CMSG")
-    smsg = generate_opcode_enum(session, "SMSG")
-    combined = "\n".join(x for x in (cmsg, smsg) if x)
-    if combined.strip():
-        _write_codegen_output(
-            f"Opcodes_codegen_{_codegen_build(session)}.h", combined + "\n")
-    return cmsg.count("\n") + smsg.count("\n")
+    from tc_wow_analyzer.codegen.writer import run_codegen_opcodes
+    return run_codegen_opcodes(session)
+
+
+# User-supplied (like cross_build_migration's KV_PREV_DB_PATH): set it with
+# session.db.kv_set("previous_build_dir", r"C:\dumps_68275") to pin the
+# comparison target; otherwise the newest archive next to the dumps dir is used.
+KV_PREVIOUS_BUILD_DIR = "previous_build_dir"
+
+
+def _run_build_diff(session):
+    """Diff the current build against an archived one.
+
+    `diffing/build_differ.py` had no caller anywhere in the plugin, so a whole
+    module was carried through every migration without ever running. It is now
+    reachable as a batch task; the previous build directory comes from the
+    kv key cross_build_migration already uses.
+    """
+    from tc_wow_analyzer.diffing.build_differ import diff_builds
+    from tc_wow_analyzer.core.utils import dumps_dir, archive_builds
+
+    old_dir = session.db.kv_get(KV_PREVIOUS_BUILD_DIR)
+    if not old_dir:
+        archives = archive_builds()
+        if not archives:
+            msg_warn("Build diff: no archived build found next to "
+                     f"{dumps_dir()} (expected <dumps_dir>_<build>/)")
+            return 0
+        old_dir = f"{dumps_dir()}_{archives[0]}"
+    return diff_builds(session, old_dir)

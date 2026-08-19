@@ -796,6 +796,15 @@ class _StateStore:
 # IncrementalEngine
 # ---------------------------------------------------------------------------
 
+def _accepts_eas(func):
+    """True if *func* has an ``eas`` parameter we can scope it with."""
+    try:
+        import inspect
+        return "eas" in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 class IncrementalEngine:
     """Orchestrates incremental analysis: change detection, planning, execution.
 
@@ -1234,11 +1243,21 @@ class IncrementalEngine:
                         f"{module_path}.{func_name} not found"
                     )
 
-                # Special case: build_delta takes an extra arg
+                # Pass the scoped function set to analyzers that accept one.
+                # plan.functions_per_analyzer was computed and then never used:
+                # every analyzer ran over the WHOLE IDB while plan.summary()
+                # reported "N functions", so "incremental" was cosmetic.
+                scoped_eas = (plan.functions_per_analyzer or {}).get(key)
                 if key == "build_delta":
-                    count = func(self.session, None)
+                    count = func(self.session, None)  # takes an extra arg
+                elif scoped_eas and _accepts_eas(func):
+                    count = func(self.session, eas=set(scoped_eas))
                 else:
                     count = func(self.session)
+                    if scoped_eas:
+                        msg_info(f"     ({display} has no eas= parameter — ran "
+                                 f"over the full database, not the "
+                                 f"{len(scoped_eas)} scoped functions)")
 
                 if count is None:
                     count = 0
@@ -1262,6 +1281,7 @@ class IncrementalEngine:
                 }
 
                 msg_info(f"  -> {display}: {count} items in {duration:.1f}s")
+                self._record_ledger(key, count, duration, None)
 
             except Exception as e:
                 duration = time.time() - analyzer_start
@@ -1273,10 +1293,27 @@ class IncrementalEngine:
                     "error": error_msg,
                 }
                 msg_error(f"  -> {display} FAILED ({duration:.1f}s): {error_msg}")
+                self._record_ledger(key, -1, duration, e)
 
                 if stop_on_error:
                     msg_error("  Stopping execution due to stop_on_error=True")
                     break
+
+        # Advance the baseline for the functions this run covered. Without
+        # this, detect_changes() reported the SAME set of changes on every
+        # subsequent run: `execute_plan` only ever wrote `analyzer_last_run`,
+        # and detect_changes()'s own update loop never computed a hash.
+        try:
+            covered = set()
+            for eas in (plan.functions_per_analyzer or {}).values():
+                covered.update(eas or ())
+            if not covered:
+                covered = set(plan.changes.all_changed_eas or ())
+            if covered and any(r["status"] == "success" for r in results.values()):
+                updated = self.update_baseline_for_functions(covered)
+                msg_info(f"  baseline advanced for {updated} functions")
+        except Exception as exc:
+            msg_warn(f"  could not advance baseline: {exc}")
 
         # Persist state updates
         self._store.save(state)
@@ -1446,6 +1483,35 @@ class IncrementalEngine:
         self._store.save(state)
         msg_info("All analyzer timestamps reset — next plan will include all.")
 
+    def _record_ledger(self, analyzer_key, count, duration, error):
+        """Mirror an incremental run into the same durable ledger the full run
+        uses.
+
+        `analyzers/__init__.py` records every analyzer's yield and every failure
+        via db.record_yield/record_failure. `execute_plan` recorded neither, so
+        anything run through the incremental engine was invisible in the Failure
+        Ledger view and in regression detection — exactly the runs most likely
+        to be used day to day.
+        """
+        db = getattr(self.session, "db", None)
+        if db is None:
+            return
+        try:
+            build = int(self.session.cfg.build_number or 0)
+        except Exception:
+            build = 0
+        try:
+            if error is not None:
+                db.record_failure(build, "analyzer", analyzer_key,
+                                  error_type=type(error).__name__,
+                                  error_msg=str(error)[:500])
+            else:
+                db.record_yield(build, analyzer_key, max(0, count),
+                                status="OK", elapsed_sec=round(duration, 1))
+            db.commit()
+        except Exception:
+            pass  # bookkeeping must never break a run
+
     def update_baseline_for_functions(self, eas: set):
         """Update the stored hashes/names/types for specific functions.
 
@@ -1599,8 +1665,13 @@ class IncrementalEngine:
                         for row in rows:
                             scoped.add(row["ea"])
 
-                # If we could not scope (no DB data), fall back to all changed
+                # If we could not scope (no DB data), fall back to all changed.
+                # Doing this silently made a missing `functions.system` look
+                # like a deliberately broad scope.
                 if not scoped and all_changed:
+                    msg_warn(f"  {key}: no system classification in the DB — "
+                             f"scoping to ALL {len(all_changed)} changed "
+                             f"functions")
                     scoped = all_changed.copy()
 
                 result[key] = scoped

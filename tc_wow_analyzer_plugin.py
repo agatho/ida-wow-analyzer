@@ -148,6 +148,18 @@ class TcWowAnalyzerPlugmod(idaapi.plugmod_t):
         # Hot-reload for development: if Shift is held, reload all modules
         if arg == 1:
             print("[TC-WoW] Hot-reloading plugin modules...")
+            # Shut the old session down FIRST. Dropping the reference without
+            # this leaked everything it owned: all 19 UI actions stayed
+            # registered (so re-registration failed and every context menu came
+            # up empty), the IDB/UI hooks stayed installed pointing at a dead
+            # session, the SQLite connection stayed open, and the scheduler
+            # thread plus the dashboard HTTP server kept running. PluginSession
+            # has no __del__, so nothing else would ever have released them.
+            if self._session is not None:
+                try:
+                    self._session.shutdown()
+                except Exception as exc:
+                    print(f"[TC-WoW] Shutdown during reload failed: {exc}")
             self._initialized = False
             self._session = None
             _unload_package("tc_wow_analyzer")
