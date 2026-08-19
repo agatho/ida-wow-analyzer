@@ -122,6 +122,7 @@ WIRE_FORMATS_EXPORT_TIME = "wire_formats_export_time"  # written by wire_format_
 # ---------------------------------------------------------------------------
 CODEGEN_LAST_RUN = "codegen_last_run"  # written by codegen/writer.py
 VTABLE_ANALYSIS = "vtable_analysis"    # written by analyzers/vtable_analyzer.py
+OPCODE_DISPATCH_CANDIDATES = "opcode_dispatch_candidates"  # written by analyzers/opcode_dispatch_recovery.py
 
 BEHAVIORAL_SPEC_PREFIX = "behavioral_spec:"
 EXECUTION_TRACE_PREFIX = "execution_trace:"

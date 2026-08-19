@@ -252,6 +252,7 @@ def run_all_analyzers(session):
         # Graph & architecture
         ("Call Graph Analytics", _run_call_graph_analytics),
         ("Indirect Call Resolution", _run_indirect_call_resolver),
+        ("Opcode Dispatch Recovery", _run_opcode_dispatch_recovery),
         ("Event System Recovery", _run_event_system),
         # Semantic analysis
         ("Symbolic Constraints", _run_symbolic_constraints),
@@ -836,6 +837,12 @@ def _run_cvar_extraction(session):
 def _run_call_graph_analytics(session):
     from tc_wow_analyzer.analyzers.call_graph_analytics import analyze_call_graph
     return analyze_call_graph(session)
+
+
+def _run_opcode_dispatch_recovery(session):
+    from tc_wow_analyzer.analyzers.opcode_dispatch_recovery import (
+        analyze_opcode_dispatch_recovery)
+    return analyze_opcode_dispatch_recovery(session)
 
 
 def _run_indirect_call_resolver(session):

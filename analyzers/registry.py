@@ -99,6 +99,7 @@ REGISTRY = [
     # ── Graph & architecture ──
     AnalyzerInfo("Call Graph Analytics",    "graph",       "call_graph_analytics",     None),
     AnalyzerInfo("Indirect Call Resolution","graph",       "indirect_calls",           None),
+    AnalyzerInfo("Opcode Dispatch Recovery","graph",       kv_keys.OPCODE_DISPATCH_CANDIDATES, "opcodes"),
     AnalyzerInfo("Event System Recovery",   "graph",       "event_system",             None),
     # ── Semantic analysis ──
     AnalyzerInfo("Symbolic Constraints",    "semantic",    "symbolic_constraints",     None),
