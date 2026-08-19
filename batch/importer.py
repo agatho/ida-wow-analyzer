@@ -24,6 +24,7 @@ import time
 
 from tc_wow_analyzer.core.utils import msg, msg_info, msg_warn, msg_error
 from tc_wow_analyzer.core import kv_keys
+from tc_wow_analyzer.core import autodump
 
 
 def _verify_build_matches_image(session, dumps_dir, build):
@@ -556,30 +557,16 @@ def _import_jam_types(session, filepath):
 
     count = 0
 
-    # AutoDump emits cmsg_messages / smsg_messages / both_messages /
-    # unk_messages. The importer used to read client_messages /
-    # server_messages / shared_structures — names that appear NOWHERE in the
-    # file. Result: 0 of 482 JAM types imported on build 69382, with no error,
-    # which starved wire_format_recovery, packet codegen and every consumer of
-    # `jam_types`. The legacy names are kept so older dumps still import.
-    categories = (
-        ("cmsg_messages", "CMSG"),
-        ("smsg_messages", "SMSG"),
-        ("both_messages", None),
-        ("unk_messages", None),
-        ("client_messages", "CMSG"),      # legacy AutoDump layout
-        ("server_messages", "SMSG"),      # legacy
-        ("shared_structures", None),      # legacy
-    )
-    seen_categories = [c for c, _d in categories if data.get(c)]
+    # Categories via core.autodump — the single reader shared with
+    # jam_recovery / jam_metadata_apply / jam_type_discovery. All four modules
+    # used to hardcode their own (and all four were wrong).
+    seen_categories = autodump.jam_categories_present(data)
     if not seen_categories:
         msg_warn(f"    jam: none of the known message categories present "
                  f"(file has: {sorted(data.keys())})")
         return 0
 
-    for category, _direction in categories:
-        messages = data.get(category, [])
-        for m in messages:
+    for m, _category, implied_direction in autodump.iter_jam_messages(data):
             name = m.get("name", "")
             if not name:
                 continue
@@ -610,16 +597,14 @@ def _import_jam_types(session, filepath):
             # is the only opcode-ish information build 69382 provides at all
             # (wow_opcode_dispatch is empty). Record it so opcode_dispatcher and
             # handler_jam_linking have something to work with.
-            direction = (m.get("direction") or "").upper()
-            if direction in ("CMSG", "SMSG") and deserializer_ea:
+            direction = autodump.jam_direction(m, implied_direction)
+            if direction and deserializer_ea:
                 db.execute(
                     """INSERT OR IGNORE INTO annotations
                        (ea, ann_type, value, source, confidence, created_at)
                        VALUES (?, 'jam_handler', ?, 'autodump', ?, ?)""",
                     (deserializer_ea, f"{direction}:{name}",
-                     {"high": 95, "med": 75, "low": 50}.get(
-                         (m.get("confidence") or "").lower(), 60),
-                     time.time()))
+                     autodump.confidence_value(m), time.time()))
 
     db.commit()
     msg_info(f"    jam categories used: {', '.join(seen_categories)}")

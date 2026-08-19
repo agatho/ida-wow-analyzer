@@ -18,6 +18,7 @@ import idautils
 from tc_wow_analyzer.core.utils import (
     msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text
 )
+from tc_wow_analyzer.core import autodump
 
 
 # Known serializer call patterns to identify field types
@@ -104,9 +105,16 @@ def _import_jam_types_json(session, jam_file):
 
     count = 0
 
-    for category in ("client_messages", "server_messages", "shared_types"):
-        messages = data.get(category, [])
-        for m in messages:
+    # Categories come from core.autodump — this module used to carry its own
+    # list ("client_messages"/"server_messages"/"shared_types"), none of which
+    # AutoDump emits, so it imported 0 of 482 message types.
+    present = autodump.jam_categories_present(data)
+    if not present:
+        msg_warn(f"  jam: no known message categories in {jam_file} "
+                 f"(has: {sorted(data.keys())})")
+        return 0
+
+    for m, _category, _implied in autodump.iter_jam_messages(data):
             name = m.get("name", "")
             if not name:
                 continue

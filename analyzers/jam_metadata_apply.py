@@ -22,9 +22,8 @@ Output:
   kv_store["jam_metadata_apply"] = {
       "version": 1,
       "json_path": "...",
-      "client_messages": int,
-      "server_messages": int,
-      "shared_structures": int,
+      "categories": {"cmsg_messages": int, "smsg_messages": int, ...},
+      "messages_total": int,
       "functions_tagged": int,
       "comments_set": int,
       "types_applied": int,
@@ -51,6 +50,7 @@ from tc_wow_analyzer.analyzers.idb_enrichment import (
     _try_rename,
     _safe_struct_name,
 )
+from tc_wow_analyzer.core import autodump
 
 
 def _resolve_json_path(cfg):
@@ -217,10 +217,14 @@ def analyze_jam_metadata_apply(session):
         data = json.load(f)
 
     t0 = time.time()
+    # Category counts come from core.autodump. The hardcoded
+    # client_messages/server_messages/shared_structures keys used here never
+    # matched what AutoDump writes (cmsg_/smsg_/both_messages), so every count
+    # was 0 and the apply loop below iterated over nothing.
+    category_counts = autodump.jam_counts(data)
     stats = {
-        "client_messages": len(data.get("client_messages", [])),
-        "server_messages": len(data.get("server_messages", [])),
-        "shared_structures": len(data.get("shared_structures", [])),
+        "categories": category_counts,
+        "messages_total": sum(category_counts.values()),
         "functions_tagged": 0,
         "comments_set": 0,
         "types_applied": 0,
@@ -229,13 +233,20 @@ def analyze_jam_metadata_apply(session):
         "missing_jam_struct": 0,
     }
 
-    already_seen = set()
-    for category in ("client_messages", "server_messages", "shared_structures"):
-        for entry in data.get(category, []):
-            _apply_one(entry, category, cfg, db, stats, already_seen)
+    if not category_counts:
+        msg_warn(f"JAM apply: no known message categories in {json_path} "
+                 f"(has: {sorted(data.keys())})")
+        return 0
 
-    # Cross-link opcode → jam_type for shared_structures with handler_rva.
-    _link_opcodes_for_shared(data.get("shared_structures", []), cfg, db, stats)
+    already_seen = set()
+    for entry, category, _implied in autodump.iter_jam_messages(data):
+        _apply_one(entry, category, cfg, db, stats, already_seen)
+
+    # Cross-link opcode -> jam_type for every entry that carries a handler_rva
+    # (AutoDump puts those in both_messages, not in a "shared_structures" key).
+    with_handler = [m for m, _c, _i in autodump.iter_jam_messages(data)
+                    if m.get("handler_rva")]
+    _link_opcodes_for_shared(with_handler, cfg, db, stats)
 
     db.commit()
 
@@ -246,8 +257,9 @@ def analyze_jam_metadata_apply(session):
     db.commit()
 
     msg_info(
-        f"JAM apply: cli={stats['client_messages']} srv={stats['server_messages']} "
-        f"shared={stats['shared_structures']} | tagged={stats['functions_tagged']} "
+        f"JAM apply: {stats['messages_total']} messages "
+        f"({', '.join(f'{k}={v}' for k, v in category_counts.items())}) "
+        f"| tagged={stats['functions_tagged']} "
         f"renamed={stats['renames_applied']} types={stats['types_applied']} "
         f"comments={stats['comments_set']} opcode_links={stats['opcodes_linked']} "
         f"missing_struct={stats['missing_jam_struct']} ({stats['elapsed_sec']}s)"

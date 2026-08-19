@@ -349,22 +349,23 @@ def run_export(output_dir=None, session=None):
     return output_dir
 
 
-# Auto-run ONLY when IDA executes this file as its -S script.
+# Auto-run ONLY when IDA executes THIS FILE directly as its -S script.
 #
-# The old guard was `if __name__ == "__main__" or "idaapi" in sys.modules:`,
-# which is true for *any* import of this module from inside idat — so
-# `from tc_wow_analyzer.batch.headless import run_export` re-launched the whole
-# multi-hour pipeline as an import side effect.
-def _is_ida_script_entry():
-    if __name__ == "__main__":
-        return True
-    # Some wrappers exec the script instead of importing it as __main__;
-    # fall back to checking argv[0] for our own filename.
-    return any(a.endswith(("headless.py", "tc_wow_headless_run.py"))
-               for a in sys.argv[:1])
-
-
-if _is_ida_script_entry():
+# Two things this guard must not do:
+#
+#  1. Fire on a plain import. The old condition was
+#     `__name__ == "__main__" or "idaapi" in sys.modules`, which is true for
+#     ANY import inside idat — so `from tc_wow_analyzer.batch.headless import
+#     run_export` re-launched the entire multi-hour pipeline as a side effect.
+#
+#  2. Fire when a wrapper drives us. `c:\dumps\pipeline\tc_wow_headless_run.py`
+#     exists because idat's -S cannot handle the spaces in the plugin path; it
+#     imports this module and calls run_headless_analysis() itself. Matching on
+#     sys.argv[0] would fire here as well and run the whole pipeline TWICE.
+#
+# `__name__ == "__main__"` is true exactly when idat runs this file as the
+# script and false when anyone imports it, which is precisely the distinction.
+if __name__ == "__main__":
     try:
         import idaapi
         if idaapi.cvar.batch:

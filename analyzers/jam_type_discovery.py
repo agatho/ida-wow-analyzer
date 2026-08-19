@@ -30,6 +30,7 @@ import time
 from collections import defaultdict
 
 from tc_wow_analyzer.core.utils import msg_info, msg_warn, current_build, dumps_dir
+from tc_wow_analyzer.core import autodump
 
 _JAM_NAME_RE = re.compile(r"\b(Jam[A-Z][A-Za-z0-9_]+)\b")
 _MIRROR_SIG_RE = re.compile(
@@ -48,8 +49,9 @@ def _load_autodump(build):
     with open(path) as f:
         ad = json.load(f)
     out = {}
-    for kind in ("client_messages", "server_messages", "shared_structures"):
-        for it in ad.get(kind, []):
+    # Categories via core.autodump: the hardcoded list here matched none of the
+    # keys AutoDump actually writes, so discovery always saw an empty file.
+    for it, kind, _implied in autodump.iter_jam_messages(ad):
             nm = it.get("name") or ""
             if not nm: continue
             out[nm] = {
