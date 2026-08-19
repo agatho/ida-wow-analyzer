@@ -173,10 +173,29 @@ def _jam_parts_to_cpp(jam_name, parts):
 
 def run_codegen_packets(session):
     """Packet structs + read/write + handler stubs for every JAM type."""
-    from tc_wow_analyzer.codegen.packet_scaffolding import generate_all_for_jam
+    from tc_wow_analyzer.codegen.packet_scaffolding import (
+        generate_all_for_jam, _ensure_packet_fields)
     db = session.db
+
+    # Populate jam_types.fields_json BEFORE selecting on it.
+    #
+    # `_ensure_packet_fields()` was only reached from inside
+    # generate_packet_struct(), i.e. from within the loop below — which
+    # iterates the rows this very SELECT returns. With no fields_json yet the
+    # SELECT matched nothing, the loop body never ran, and the lazy populate it
+    # contained never fired. A perfect deadlock: the fix for "no fields" sat
+    # behind a query that required the fields to already exist.
+    #
+    # On build 69382 that left `wow_packet_structures_69382.json` — 292 packets
+    # with real field layouts — completely unused, and packet codegen emitted 0.
+    _ensure_packet_fields(session)
+
     rows = db.fetchall(
-        "SELECT name FROM jam_types WHERE fields_json IS NOT NULL")
+        "SELECT name FROM jam_types "
+        "WHERE fields_json IS NOT NULL AND fields_json NOT IN ('', '[]')")
+    if not rows:
+        msg_warn("  codegen: no JAM type has field data — check that "
+                 "wow_packet_structures_<build>.json exists and imported")
     directions = _jam_directions(db)
 
     count = 0

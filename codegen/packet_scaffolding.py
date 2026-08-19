@@ -332,15 +332,34 @@ def _generate_struct_from_tc(jam_name, tc_name, fields, direction):
     return "\n".join(lines) + "\n"
 
 
+#: JAM name prefixes to strip, LONGEST FIRST.
+#
+# Order is load-bearing. With "JamCli" ahead of "JamClient",
+# `JamClientAIBehaviorNode` matched "JamCli" and became `entAIBehaviorNode` —
+# 50 of the 482 JAM types on build 69382 are `JamClient*`, so 50 generated
+# classes carried a name that starts mid-word. Sorted at definition time so
+# adding a prefix later cannot reintroduce the bug.
+_JAM_PREFIXES = tuple(sorted(
+    ("JamClient", "JamSvcs", "JamSrv", "JamCli", "FJam", "Jam"),
+    key=len, reverse=True))
+
+
 def _jam_to_class_name(jam_name):
     """Convert JAM name to TrinityCore class name.
 
-    JamCliHouseDecorAction → HouseDecorAction
-    JamSvcsNeighborhoodReservePlot → NeighborhoodReservePlot
+    JamCliHouseDecorAction          → HouseDecorAction
+    JamClientAIBehaviorNode         → AIBehaviorNode
+    JamSvcsNeighborhoodReservePlot  → NeighborhoodReservePlot
+    FJamHousingCornerstone_C        → HousingCornerstone_C
     """
-    for prefix in ("JamCli", "JamSvcs", "JamSrv", "Jam"):
+    for prefix in _JAM_PREFIXES:
         if jam_name.startswith(prefix):
-            return jam_name[len(prefix):]
+            stripped = jam_name[len(prefix):]
+            # Never strip down to nothing or to something that cannot begin a
+            # C++ identifier — an ugly name beats an invalid one.
+            if stripped and (stripped[0].isalpha() or stripped[0] == "_"):
+                return stripped
+            return jam_name
     return jam_name
 
 
