@@ -59,6 +59,10 @@ def start_web_dashboard(session, port=8421):
             return
 
         _db_path = session.db.path
+        # Resolve every IDA-API-dependent value HERE, on the main thread, so
+        # the request handlers never touch the IDA API from the HTTP thread.
+        global _run_report_path
+        _run_report_path = _resolve_run_report_path()
 
         # Try a range of ports in case the default is occupied
         bound = False
@@ -172,19 +176,43 @@ def _table_count(conn, table):
         return 0
 
 
-def _read_run_report():
-    """Read the authoritative per-analyzer run_report.json next to the IDB, or None."""
+# Path of the run report, resolved ONCE on the IDA main thread in
+# start_web_dashboard(). See _read_run_report() for why.
+_run_report_path = None
+
+
+def _resolve_run_report_path():
+    """Compute the run-report path. MUST be called on IDA's main thread."""
     try:
         import ida_loader
         import os
-        import json
         idb = ida_loader.get_path(ida_loader.PATH_TYPE_IDB)
         if not idb:
             return None
-        p = os.path.splitext(idb)[0] + ".tc_wow_analyzer.run_report.json"
-        if not os.path.isfile(p):
+        return os.path.splitext(idb)[0] + ".tc_wow_analyzer.run_report.json"
+    except Exception:
+        return None
+
+
+def _read_run_report():
+    """Read the per-analyzer run_report.json, or None.
+
+    THREADING: this runs inside the HTTP server thread, which is NOT IDA's main
+    thread. It used to call ``ida_loader.get_path()`` there on every /api/stats
+    request — i.e. on every dashboard page load. IDA's API is not thread-safe,
+    and the surrounding try/except catches Python exceptions but not a native
+    crash. The path is therefore resolved once, on the main thread, in
+    start_web_dashboard(); only plain file I/O happens here.
+    """
+    import os
+    import json
+    path = _run_report_path
+    if not path:
+        return None
+    try:
+        if not os.path.isfile(path):
             return None
-        with open(p, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return None
@@ -1497,7 +1525,7 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
                     result["taint_flows"] = flows if isinstance(flows, list) else []
 
             # Scaffold code
-            scaffolds = _kv_get(conn, "scaffolds")
+            scaffolds = _kv_get(conn, "handler_scaffolding")
             if scaffolds and isinstance(scaffolds, dict) and name in scaffolds:
                 result["scaffold"] = scaffolds[name]
 
@@ -1507,7 +1535,7 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
                 result["verification"] = verification
 
             # Validation constraints
-            validation = _kv_get(conn, "validation_constraints")
+            validation = _kv_get(conn, "validation_comparison_report")
             if validation and isinstance(validation, dict):
                 handler_constraints = validation.get(name)
                 if handler_constraints:
@@ -1643,24 +1671,15 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
         if not conn:
             return self._send_error(500, "Database not available")
         try:
-            scaffolds = _kv_get(conn, "scaffolds")
+            scaffolds = _kv_get(conn, "handler_scaffolding")
             if scaffolds and isinstance(scaffolds, dict):
                 self._send_json(scaffolds)
                 return
 
-            # Fallback: search kv_store for scaffold-related keys
-            rows = conn.execute(
-                "SELECT key, value FROM kv_store WHERE key LIKE '%scaffold%'"
-            ).fetchall()
-            result = {}
-            for r in rows:
-                try:
-                    val = json.loads(r["value"])
-                except (json.JSONDecodeError, TypeError):
-                    val = r["value"]
-                result[r["key"]] = val
-
-            self._send_json(result)
+            # The old fallback globbed kv_store for '%scaffold%' and returned
+            # a different shape than the frontend expects. With the correct key
+            # above it is dead weight.
+            self._send_json({})
         finally:
             conn.close()
 
@@ -1670,7 +1689,7 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
             return self._send_error(500, "Database not available")
         try:
             # Try dedicated KV key first
-            constraints = _kv_get(conn, "validation_constraints")
+            constraints = _kv_get(conn, "validation_comparison_report")
             if constraints and isinstance(constraints, dict):
                 flat = []
                 for handler_name, clist in constraints.items():
@@ -1682,21 +1701,8 @@ class _DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(flat)
                 return
 
-            # Fallback: look for validation_extractor results
-            ve = _kv_get(conn, "validation_extractor")
-            if ve and isinstance(ve, dict):
-                flat = []
-                for handler_name, data in ve.items():
-                    checks = data if isinstance(data, list) else data.get(
-                        "checks", []
-                    ) if isinstance(data, dict) else []
-                    for c in checks:
-                        if isinstance(c, dict):
-                            c["handler"] = handler_name
-                            flat.append(c)
-                self._send_json(flat)
-                return
-
+            # No fallback: the old one read "validation_extractor", a key no
+            # writer ever produced, so this endpoint could only ever return [].
             self._send_json([])
         finally:
             conn.close()

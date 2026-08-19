@@ -177,8 +177,12 @@ def run_all_analyzers(session):
 
     analyzers = [
         ("Lua API", _run_lua_api),
-        ("VTables", _run_vtables),
+        # RTTI to SQL fills the `vtables` table; VTables then mirrors it into
+        # kv_store so the fallbacks in event_system_recovery / pe_metadata /
+        # alloc_class_catalog have something to read. Reversing this order left
+        # all three permanently empty.
         ("RTTI to SQL", _run_rtti_to_sql),
+        ("VTables", _run_vtables),
         ("DB2 Metadata", _run_db2_metadata),
         ("DB2 LoadInfo Codegen", _run_db2_loadinfo_codegen),
         ("Opcode Dispatcher", _run_opcode_dispatcher),

@@ -24,6 +24,7 @@ import idautils
 from tc_wow_analyzer.core.utils import (
     msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text
 )
+from tc_wow_analyzer.core import kv_keys
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +642,7 @@ def _pass_resolve_constants(code, session):
                     enum_value_map[val] = (enum_name, label, enum_info.get("value_count", 0))
 
     # Load mined constants if available
-    mined_constants = db.kv_get("mined_constants") or {}
+    mined_constants = db.kv_get(kv_keys.GAME_CONSTANTS) or {}
 
     # Known TC error/result code patterns (common across many systems)
     _KNOWN_RESULT_CODES = {

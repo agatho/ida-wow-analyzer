@@ -29,6 +29,7 @@ import idaapi
 from tc_wow_analyzer.core.utils import (
     msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text
 )
+from tc_wow_analyzer.core import kv_keys
 
 
 # ---------------------------------------------------------------------------
@@ -950,7 +951,7 @@ def _recover_observer_patterns(db):
 
     if not vtables:
         # Try kv_store fallback
-        vtable_data = db.kv_get("vtable_analysis")
+        vtable_data = db.kv_get(kv_keys.VTABLE_ANALYSIS)
         if vtable_data and isinstance(vtable_data, dict):
             vtables_list = vtable_data.get("vtables", [])
             return _recover_observers_from_kv(vtables_list)

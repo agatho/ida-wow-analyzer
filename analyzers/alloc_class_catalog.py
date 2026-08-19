@@ -29,6 +29,7 @@ import idc
 from tc_wow_analyzer.core.utils import (
     msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text
 )
+from tc_wow_analyzer.core import kv_keys
 
 
 # ---------------------------------------------------------------------------
@@ -1214,9 +1215,21 @@ def _load_vtable_db(session):
     except Exception:
         pass
 
-    # Also try kv_store "vtables" key (from importer)
-    kv_vtables = db.kv_get("vtables")
-    if isinstance(kv_vtables, dict):
+    # kv_store fallback. The canonical blob is published by vtable_analyzer as
+    # {"vtables": [{"ea": .., "class_name": ..}, ..]}; the legacy dict-keyed-by-
+    # hex-ea shape is still accepted so older databases keep working.
+    kv_vtables = db.kv_get(kv_keys.VTABLE_ANALYSIS)
+    if isinstance(kv_vtables, dict) and "vtables" in kv_vtables:
+        for info in kv_vtables.get("vtables") or []:
+            ea_int = info.get("ea")
+            if isinstance(ea_int, str):
+                try:
+                    ea_int = int(ea_int, 16)
+                except ValueError:
+                    continue
+            if isinstance(ea_int, int) and ea_int not in vtable_map:
+                vtable_map[ea_int] = info
+    elif isinstance(kv_vtables, dict):
         for ea_str_key, info in kv_vtables.items():
             try:
                 ea_int = int(ea_str_key, 16) if isinstance(ea_str_key, str) else ea_str_key

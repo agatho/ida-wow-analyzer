@@ -14,6 +14,63 @@ import ida_xref
 import idautils
 
 from tc_wow_analyzer.core.utils import msg, msg_info, msg_warn, ea_str
+from tc_wow_analyzer.core import kv_keys
+
+
+def _publish_vtable_kv(session):
+    """Mirror the `vtables` SQL table into kv_store[vtable_analysis].
+
+    THREE analyzers carry a kv fallback for the case where the SQL table is
+    thin (`event_system_recovery`, `pe_metadata`, `alloc_class_catalog`) and
+    all three read a key that nothing ever wrote -- so the fallback could never
+    fire. On build 12.1.0.69382 the AutoDump ships only 47 vtable methods, which
+    is exactly the situation the fallback exists for.
+
+    Returns the number of vtables published.
+    """
+    db = session.db
+    try:
+        rows = db.fetchall(
+            "SELECT ea, rva, class_name, entry_count, source, parent_class "
+            "FROM vtables ORDER BY ea")
+    except Exception as exc:
+        msg_warn(f"  vtable kv publish skipped: {exc}")
+        return 0
+
+    entries_by_vt = {}
+    try:
+        for row in db.fetchall(
+                "SELECT vtable_ea, slot_index, func_ea, func_name "
+                "FROM vtable_entries ORDER BY vtable_ea, slot_index"):
+            entries_by_vt.setdefault(row["vtable_ea"], []).append({
+                "slot": row["slot_index"],
+                "ea": row["func_ea"],
+                "name": row["func_name"],
+            })
+    except Exception:
+        pass  # vtable_entries may legitimately be empty
+
+    vtables = []
+    for row in rows:
+        vtables.append({
+            "ea": row["ea"],
+            "rva": row["rva"],
+            "class_name": row["class_name"],
+            "entry_count": row["entry_count"],
+            "source": row["source"],
+            "parent_class": row["parent_class"],
+            "entries": entries_by_vt.get(row["ea"], []),
+        })
+
+    db.kv_set(kv_keys.VTABLE_ANALYSIS, {
+        "version": 1,
+        "count": len(vtables),
+        "vtables": vtables,
+    })
+    db.commit()
+    msg_info(f"  published {len(vtables)} vtables to kv_store["
+             f"'{kv_keys.VTABLE_ANALYSIS}']")
+    return len(vtables)
 
 
 def analyze_vtables(session):
@@ -34,6 +91,7 @@ def analyze_vtables(session):
     if existing > 0:
         msg_info(f"VTable analyzer: {existing} vtables already in DB "
                  f"(from JSON import)")
+        _publish_vtable_kv(session)
         return existing
 
     import os
@@ -42,7 +100,9 @@ def analyze_vtables(session):
     if ext_dir:
         vtable_file = os.path.join(ext_dir, "vtable_master_database.json")
         if os.path.isfile(vtable_file):
-            return _import_vtable_database(session, vtable_file)
+            count = _import_vtable_database(session, vtable_file)
+            _publish_vtable_kv(session)
+            return count
 
     for build_str in [str(cfg.build_number)]:
         build_info = cfg.get("builds", build_str)
@@ -52,10 +112,14 @@ def analyze_vtables(session):
         if bd:
             vtable_file = os.path.join(bd, "vtable_master_database.json")
             if os.path.isfile(vtable_file):
-                return _import_vtable_database(session, vtable_file)
+                count = _import_vtable_database(session, vtable_file)
+                _publish_vtable_kv(session)
+                return count
 
     msg_warn("No existing vtable database found — scanning binary")
-    return _scan_for_vtables(session)
+    count = _scan_for_vtables(session)
+    _publish_vtable_kv(session)
+    return count
 
 
 def _import_vtable_database(session, vtable_file):

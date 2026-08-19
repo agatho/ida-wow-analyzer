@@ -30,6 +30,8 @@ Outputs:
 """
 
 import time
+import sqlite3
+
 from collections import defaultdict
 
 from tc_wow_analyzer.core.utils import msg, msg_info, msg_warn
@@ -163,16 +165,20 @@ def build_subsystem_catalog(session):
     # ── Pass 3: RTTI / vtable class names ──
     vt_classes_by_subsys = defaultdict(list)
     try:
+        # Column is `ea` (core/db.py). The old query said `vtable_ea`, which
+        # made every run raise OperationalError into the bare `except` below
+        # — pass 3 was a permanent silent no-op.
         vt_rows = db.fetchall(
-            "SELECT class_name, vtable_ea FROM vtables "
+            "SELECT class_name, ea FROM vtables "
             "WHERE class_name IS NOT NULL AND class_name != ''"
         )
-    except Exception:
+    except sqlite3.OperationalError as exc:
+        msg_warn(f"  subsystem catalog: vtable pass unavailable: {exc}")
         vt_rows = []
 
     for row in vt_rows:
         cname = row["class_name"]
-        vt_ea = row["vtable_ea"]
+        vt_ea = row["ea"]
         cls_votes = _classify_name(cname)
         if cls_votes:
             # Pick the strongest subsystem for this class

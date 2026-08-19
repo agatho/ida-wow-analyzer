@@ -31,6 +31,7 @@ import ida_name
 import idautils
 
 from tc_wow_analyzer.core.utils import msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text
+from tc_wow_analyzer.core import kv_keys
 
 
 # =========================================================================
@@ -337,7 +338,7 @@ def _collect_handler_data(session, handler_row):
         )
 
     # --- Enum recovery ---
-    enum_data = db.kv_get("enum_recovery")
+    enum_data = db.kv_get(kv_keys.RECOVERED_ENUMS)
     if enum_data and isinstance(enum_data, dict):
         enums = enum_data.get("enums", enum_data)
         if isinstance(enums, dict):
@@ -1532,6 +1533,7 @@ def generate_all_scaffolds(session):
     total_confidence = 0
     category_counts = {}
     error_count = 0
+    generated_sources = []
 
     for i, handler_row in enumerate(handlers):
         tc_name = handler_row["tc_name"] or handler_row["jam_type"] or f"handler_{handler_row['internal_index']}"
@@ -1540,7 +1542,13 @@ def generate_all_scaffolds(session):
             cpp_code, metadata = _assemble_scaffold(hd)
 
             handler_name = metadata["handler_name"]
+            # Keep the generated code. It used to be discarded here, so the
+            # analyzer's actual product existed only inside this loop and had
+            # to be regenerated from scratch by export_all_handlers().
+            metadata = dict(metadata)
+            metadata["cpp_code"] = cpp_code
             scaffolds[handler_name] = metadata
+            generated_sources.append(cpp_code)
 
             total_completeness += metadata["completeness_score"]
             total_confidence += metadata["confidence_score"]
@@ -1586,6 +1594,18 @@ def generate_all_scaffolds(session):
 
     db.kv_set(KV_KEY, result)
     db.commit()
+
+    # Persist the C++ as a real artifact too — a scaffold that only exists as a
+    # JSON blob still has to be copied out by hand before it is any use.
+    if generated_sources:
+        try:
+            from tc_wow_analyzer.codegen.writer import write_artifact, build_number
+            write_artifact(
+                session, f"HandlerScaffolds_{build_number(session)}.h",
+                "\n\n".join(generated_sources) + "\n",
+                includes=('"WorldSession.h"', '"WorldPacket.h"'))
+        except Exception as exc:
+            msg_warn(f"  could not write handler scaffolds: {exc}")
 
     msg_info(f"Scaffolding complete: {n} handlers in {elapsed:.1f}s")
     msg_info(f"  Average completeness: {result['avg_completeness']}%")

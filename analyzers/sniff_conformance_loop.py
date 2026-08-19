@@ -38,6 +38,7 @@ import ida_name
 import idautils
 
 from tc_wow_analyzer.core.utils import msg, msg_info, msg_warn, msg_error, ea_str
+from tc_wow_analyzer.core import kv_keys
 
 
 # ======================================================================
@@ -1129,7 +1130,10 @@ def _load_behavioral_specs(db):
 
     Returns dict of handler_name -> spec_dict.
     """
-    data = db.kv_get("behavioral_spec")
+    # Writers store the aggregate under "behavioral_specs" (plural) and the
+    # per-handler blobs under "behavioral_spec:<tc_name>". Reading the singular
+    # key always returned None, so the behaviour-path simulation ran empty.
+    data = db.kv_get(kv_keys.BEHAVIORAL_SPECS)
     if data and isinstance(data, dict):
         return data
     return {}
@@ -2084,7 +2088,7 @@ def run_conformance_loop(session, sniff_dir=None):
         return 0
 
     grouped = _group_packets_by_opcode(all_records)
-    freq = _count_packet_frequency(grouped)
+    packet_frequency = _count_packet_frequency(grouped)
     msg_info(f"  Total: {len(all_records)} packets across "
              f"{len(grouped)} opcodes")
 
@@ -2113,6 +2117,18 @@ def run_conformance_loop(session, sniff_dir=None):
     if not has_wire:
         msg_warn("No wire formats available. Run wire_format_recovery first "
                  "for full analysis. Proceeding with limited validation.")
+    # has_specs / has_constraints / has_alignment were computed and never read,
+    # so a missing input — e.g. the behavioural specs, which were unreachable
+    # for months because of a kv key typo — degraded the analysis in silence.
+    if not has_specs:
+        msg_warn("No behavioural specs available. Run execution_trace_sim "
+                 "first; path simulation will be skipped.")
+    if not has_constraints:
+        msg_warn("No symbolic constraints available. Run symbolic_constraints "
+                 "first; value-range checks will be skipped.")
+    if not has_alignment:
+        msg_warn("No TC alignment data available. Run binary_tc_alignment "
+                 "first; source cross-checks will be skipped.")
 
     # -- Phase 3: Binary wire format validation --
     msg_info("Phase 3: Validating packets against binary wire formats...")
@@ -2269,6 +2285,16 @@ def run_conformance_loop(session, sniff_dir=None):
     report = _assemble_report(
         sniff_files, parsed_packets, divergences, fixes,
         statistics, elapsed)
+    # _count_packet_frequency() was computed at phase 1 and then dropped on the
+    # floor, so the per-opcode packet counts never reached the report and the
+    # helper was effectively dead code.
+    report["packet_frequency"] = packet_frequency
+    report["inputs_available"] = {
+        "wire_formats": has_wire,
+        "symbolic_constraints": has_constraints,
+        "behavioral_specs": has_specs,
+        "tc_alignment": has_alignment,
+    }
 
     db.kv_set(_KV_KEY, report)
     db.commit()

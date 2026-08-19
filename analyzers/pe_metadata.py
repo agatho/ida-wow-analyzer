@@ -38,6 +38,7 @@ import idaapi
 import idc
 
 from tc_wow_analyzer.core.utils import msg, msg_info, msg_warn, msg_error, ea_str
+from tc_wow_analyzer.core import kv_keys
 
 
 # ---------------------------------------------------------------------------
@@ -1443,7 +1444,7 @@ def _build_vtable_rva_set(session):
 
     # Method 2: Read from kv_store vtable data
     try:
-        vtable_data = db.kv_get("vtable_master")
+        vtable_data = db.kv_get(kv_keys.VTABLE_ANALYSIS)
         if isinstance(vtable_data, dict):
             vtables = vtable_data.get("vtables", [])
         elif isinstance(vtable_data, list):

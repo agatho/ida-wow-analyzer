@@ -17,6 +17,8 @@ kv_key / db_table values were extracted deterministically from the source
 
 from collections import namedtuple
 
+from tc_wow_analyzer.core import kv_keys
+
 # kv_key: primary kv_store blob (None if the analyzer writes only DB/IDB/files)
 # db_table: primary SQLite table it populates (None if kv/IDB/files only)
 AnalyzerInfo = namedtuple("AnalyzerInfo", ["name", "category", "kv_key", "db_table"])
@@ -25,8 +27,11 @@ AnalyzerInfo = namedtuple("AnalyzerInfo", ["name", "category", "kv_key", "db_tab
 REGISTRY = [
     # ── Core protocol/data recovery ──
     AnalyzerInfo("Lua API",                 "core",        None,                       "lua_api"),
-    AnalyzerInfo("VTables",                 "core",        None,                       "vtables"),
+    # RTTI to SQL populates `vtables`; VTables then mirrors that table into
+    # kv_store[vtable_analysis]. Running VTables first meant it always saw an
+    # empty table and the kv fallback three other analyzers rely on stayed empty.
     AnalyzerInfo("RTTI to SQL",             "core",        "rtti_to_sql",              "vtables"),
+    AnalyzerInfo("VTables",                 "core",        kv_keys.VTABLE_ANALYSIS,    "vtables"),
     AnalyzerInfo("DB2 Metadata",            "core",        None,                       "db2_tables"),
     AnalyzerInfo("DB2 LoadInfo Codegen",    "codegen",     "db2_loadinfo_codegen",     None),
     AnalyzerInfo("Opcode Dispatcher",       "core",        "auto_detected_dispatcher", "opcodes"),
@@ -67,6 +72,7 @@ REGISTRY = [
     AnalyzerInfo("Topic Deep Extractor",    "enrichment",  "topic_deep_extractor",     None),
     AnalyzerInfo("Lua API Tag",             "enrichment",  "lua_api_tag",              None),
     AnalyzerInfo("Hash Resolution",         "enrichment",  "hash_resolution",          None),
+    AnalyzerInfo("FDID Resolution",         "enrichment",  "fdid_resolution",          None),
     AnalyzerInfo("CVar Callback Rename",    "enrichment",  "cvar_callback_rename",     None),
     AnalyzerInfo("Hash Function Naming",    "enrichment",  "hash_func_naming",         None),
     AnalyzerInfo("CVar Consumer Tag",       "enrichment",  "cvar_consumer_tag",        None),

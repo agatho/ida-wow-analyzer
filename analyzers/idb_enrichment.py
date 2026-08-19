@@ -66,6 +66,7 @@ from tc_wow_analyzer.core.utils import (
     msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text,
     autodump_candidates,
 )
+from tc_wow_analyzer.core import kv_keys
 
 
 # ---------------------------------------------------------------------------
@@ -714,32 +715,30 @@ def _create_db2_structs(db):
         msg_warn(f"  Phase 2: DBD parser import failed: {exc}")
         return 0
 
-    dbd_dir = r"C:\dumps\WoWDBDefs\definitions"
+    from tc_wow_analyzer.core.utils import dumps_dir as _dumps_dir
+    dbd_dir = os.path.join(_dumps_dir(), "WoWDBDefs", "definitions")
     if not os.path.isdir(dbd_dir):
         msg_warn(f"  Phase 2: DBD definitions not found at {dbd_dir}")
         return 0
 
-    # Build target build tuple. Prefer the configured build_number; the major
-    # version we'll guess from the build number range.
-    build_num = 67186
+    build_num = 0
     try:
         from tc_wow_analyzer.core.config import cfg as _cfg
-        build_num = _cfg.build_number or build_num
+        build_num = _cfg.build_number or 0
     except Exception:
         pass
+    if not build_num:
+        msg_warn("  Phase 2: build unknown — skipping DBD layout selection "
+                 "(guessing would apply another build's field layout)")
+        return 0
 
-    # Heuristic mapping build_number -> major.minor.patch:
-    #   60000+: 11.x (Dragonflight-era)
-    #   65000+: 11.1.x
-    #   67000+: 12.0.x (Midnight beta/release)
-    if build_num >= 67000:
-        build_tuple = (12, 0, 5, build_num)
-    elif build_num >= 65000:
-        build_tuple = (11, 1, 5, build_num)
-    elif build_num >= 60000:
-        build_tuple = (11, 0, 5, build_num)
-    else:
-        build_tuple = (10, 2, 7, build_num)
+    # Version comes from the AutoDump manifest, not from a range guess. The old
+    # heuristic classified every build >= 67000 as 12.0.5, so 12.1.0/69382 got
+    # 12.0.5 layouts for every DB2 table whose schema changed in 12.1.
+    from tc_wow_analyzer.core.build_version import build_tuple as _resolve_build
+    build_tuple = _resolve_build(build_num)
+    msg_info(f"  Phase 2: DBD layouts for version "
+             f"{'.'.join(str(p) for p in build_tuple)}")
 
     # Pull DB2 table names from the SQL table
     try:
@@ -1004,7 +1003,7 @@ def _create_vtable_structs(db):
 
     # Build a unified {class_name: vtable_rva_int} map from all sources.
     classes_dict = {}
-    for p in autodump_candidates("wow_rtti"):
+    for p in autodump_candidates("wow_rtti", allow_archive=False):
         if os.path.isfile(p):
             try:
                 with open(p, "r", encoding="utf-8") as fh:
@@ -1026,7 +1025,7 @@ def _create_vtable_structs(db):
                 pass
             break
 
-    for p in autodump_candidates("wow_ctor_dtor"):
+    for p in autodump_candidates("wow_ctor_dtor", allow_archive=False):
         if os.path.isfile(p):
             try:
                 with open(p, "r", encoding="utf-8") as fh:
@@ -1055,7 +1054,7 @@ def _create_vtable_structs(db):
     # Add anonymous vtables (vtables found in binary that don't link to a class
     # name in the RTTI). They still get a struct synthesized so indirect calls
     # through them resolve to typed slot accesses.
-    for p in autodump_candidates("wow_rtti"):
+    for p in autodump_candidates("wow_rtti", allow_archive=False):
         if os.path.isfile(p):
             try:
                 with open(p, "r", encoding="utf-8") as fh:
@@ -1086,7 +1085,7 @@ def _create_vtable_structs(db):
 
     # Optional named method lookup
     method_names_by_class = {}
-    methods_paths = autodump_candidates("wow_vtable_methods")
+    methods_paths = autodump_candidates("wow_vtable_methods", allow_archive=False)
     for p in methods_paths:
         if not os.path.isfile(p):
             continue
@@ -1621,7 +1620,7 @@ def _apply_global_names(db, modified_eas):
     # Autodump JSON path is per-build; try the standard locations.
     try:
         import json as _json
-        for p in autodump_candidates("wow_globals"):
+        for p in autodump_candidates("wow_globals", allow_archive=False):
             if os.path.isfile(p):
                 with open(p, "r", encoding="utf-8") as fh:
                     globals_data = _json.load(fh)
@@ -2269,7 +2268,7 @@ def _comment_opcode_handler(db, modified_eas):
 
 def _comment_conformance_scores(db, modified_eas):
     """Add conformance score comments to handler functions."""
-    conformance = db.kv_get("conformance")
+    conformance = db.kv_get(kv_keys.CONFORMANCE_REPORT)
     if not conformance:
         return 0
 
