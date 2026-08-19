@@ -32,6 +32,7 @@ import idc
 from tc_wow_analyzer.core.utils import (
     msg, msg_info, msg_warn, msg_error, ea_str,
 )
+from tc_wow_analyzer.core.heartbeat import Heartbeat
 
 
 # ---------------------------------------------------------------------------
@@ -661,7 +662,15 @@ def _find_unreachable_markers():
     """
     results = []
 
-    for func_ea in idautils.Functions():
+    # Heartbeat: this loop walks EVERY function in the database without any
+    # output. On build 69382 that silence made Windows' hang detector kill the
+    # whole idat process (Event 1002 / AppHangB1) after 66 of 71 analyzers had
+    # already completed. See core/heartbeat.py.
+    all_funcs = list(idautils.Functions())
+    hb = Heartbeat("Phase 5: unreachable markers", total=len(all_funcs))
+
+    for func_ea in all_funcs:
+        hb.tick()
         func = ida_funcs.get_func(func_ea)
         if not func:
             continue
@@ -724,6 +733,7 @@ def _find_unreachable_markers():
                 })
 
     results.extend(cold_branches)
+    hb.done(f"{len(results)} markers")
     return results
 
 

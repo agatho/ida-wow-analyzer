@@ -26,6 +26,7 @@ import ida_ua
 from tc_wow_analyzer.core.utils import (
     msg, msg_info, msg_warn, msg_error, ea_str, get_decompiled_text
 )
+from tc_wow_analyzer.core.heartbeat import Heartbeat
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +614,10 @@ def _resolve_via_decompiler(sites, vtables_by_ea, vtables_by_name,
     """
     resolved = 0
     decompile_count = 0
+    # Heartbeat: this phase decompiles up to 25,000 callers and used to run for
+    # ~22 minutes without printing anything, which is indistinguishable from a
+    # hang — and on a longer run Windows actually does kill the process for it.
+    hb = None  # sized once caller_eas is known, below
 
     # Group sites by calling function to avoid redundant decompilations
     sites_by_caller = defaultdict(list)
@@ -631,7 +636,11 @@ def _resolve_via_decompiler(sites, vtables_by_ea, vtables_by_name,
                  f"of {len(caller_eas)} callers")
         caller_eas = caller_eas[:_MAX_DECOMPILE]
 
+    hb = Heartbeat("Phase 5: decompiler-assisted resolution",
+                   total=len(caller_eas))
+
     for caller_ea in caller_eas:
+        hb.tick()
         decomp = get_decompiled_text(caller_ea)
         if not decomp:
             continue
@@ -656,6 +665,7 @@ def _resolve_via_decompiler(sites, vtables_by_ea, vtables_by_name,
 
     msg_info(f"Decompiler resolution: decompiled {decompile_count} functions, "
              f"resolved/improved {resolved} sites")
+    hb.done(f"{decompile_count} decompiled, {resolved} resolved")
     return resolved
 
 

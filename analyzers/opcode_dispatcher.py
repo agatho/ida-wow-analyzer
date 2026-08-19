@@ -4,6 +4,8 @@ Automatically identifies the main CMSG dispatch switch statement,
 extracts handler function addresses, and maps them to TrinityCore names.
 """
 
+import os
+import json
 import ida_bytes
 import ida_funcs
 import ida_name
@@ -477,5 +479,140 @@ def analyze_handler_jam_types(session):
             msg_warn("No JAM-related functions found in functions table either")
 
     db.commit()
+    # --- Strategy 3: name normalisation against the TC opcode table ---
+    # Independent of IDA and of handler_ea: convert each JAM type name the same
+    # way the codegen does (JamCliHouseDecorAction -> CMSG_HOUSE_DECOR_ACTION)
+    # and keep only the ones that hit a REAL TrinityCore opcode.
+    updated += _link_by_name_normalisation(db)
+
+    # --- Strategy 4: handler_rva straight from the AutoDump ---
+    updated += _link_by_autodump_handler_rva(session)
+
+    if updated == 0:
+        # Say WHY, with the numbers. This analyzer returning a bare 0 told
+        # nobody that the input it needs is simply absent from this build.
+        _explain_missing_link(db)
+
     msg_info(f"Linked {updated} handlers to JAM types")
     return updated
+
+
+def _link_by_name_normalisation(db):
+    """Link jam_types to opcodes whose tc_name matches the normalised JAM name.
+
+    Deliberately conservative: only an EXACT hit against a tc_name already in
+    the opcodes table counts. The obvious temptation is to synthesise the
+    opcode name from the JAM name and insert it — that is what
+    `wow_handler_stubs_<build>.cpp` does, and on build 69382 exactly 1 of its
+    291 synthesised names corresponds to a real TrinityCore opcode. Inserting
+    the other 290 would manufacture opcodes that do not exist.
+    """
+    from tc_wow_analyzer.codegen.packet_scaffolding import _jam_to_opcode_name
+
+    try:
+        tc_rows = db.fetchall(
+            "SELECT direction, internal_index, tc_name FROM opcodes "
+            "WHERE tc_name IS NOT NULL AND tc_name != ''")
+        jam_rows = db.fetchall("SELECT name FROM jam_types")
+    except Exception as exc:
+        msg_warn(f"  name-normalisation linking unavailable: {exc}")
+        return 0
+
+    by_tc_name = {}
+    for row in tc_rows:
+        by_tc_name.setdefault(row["tc_name"], row)
+
+    linked = 0
+    for jam in jam_rows:
+        name = jam["name"]
+        if not name:
+            continue
+        for direction in ("CMSG", "SMSG"):
+            hit = by_tc_name.get(_jam_to_opcode_name(name, direction))
+            if not hit:
+                continue
+            db.upsert_opcode(direction=hit["direction"],
+                             internal_index=hit["internal_index"],
+                             jam_type=name)
+            linked += 1
+            break
+
+    if linked:
+        db.commit()
+        msg_info(f"  name normalisation: {linked} JAM types matched a real "
+                 f"TC opcode")
+    return linked
+
+
+def _link_by_autodump_handler_rva(session):
+    """Link the JAM entries that carry a real handler_rva in the AutoDump."""
+    from tc_wow_analyzer.core import autodump
+    from tc_wow_analyzer.core.utils import dumps_build_path
+
+    db, cfg = session.db, session.cfg
+    path = dumps_build_path("wow_jam_messages")
+    if not os.path.isfile(path):
+        return 0
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:
+        msg_warn(f"  handler_rva linking: cannot read {path}: {exc}")
+        return 0
+
+    linked = 0
+    for message, _cat, implied in autodump.iter_jam_messages(data):
+        handler_rva = message.get("handler_rva")
+        if not handler_rva:
+            continue
+        if isinstance(handler_rva, str):
+            try:
+                handler_rva = int(handler_rva, 16)
+            except ValueError:
+                continue
+        handler_ea = cfg.rva_to_ea(handler_rva)
+        row = db.fetchone(
+            "SELECT direction, internal_index FROM opcodes WHERE handler_ea = ?",
+            (handler_ea,))
+        if not row:
+            continue
+        db.upsert_opcode(direction=row["direction"],
+                         internal_index=row["internal_index"],
+                         jam_type=message["name"])
+        linked += 1
+
+    if linked:
+        db.commit()
+        msg_info(f"  autodump handler_rva: {linked} links")
+    return linked
+
+
+def _explain_missing_link(db):
+    """Report WHY no opcode could be linked to a JAM type.
+
+    The opcode<->JAM mapping normally comes from the dispatch table in
+    `wow_opcode_dispatch_<build>.json`. On build 69382 that file contains 0
+    handlers (111 bytes), so there is nothing to link against and no amount of
+    analysis inside the plugin can invent it. Saying that plainly is more
+    useful than returning 0.
+    """
+    try:
+        opcodes = db.fetchone("SELECT COUNT(*) AS c FROM opcodes")["c"]
+        with_handler = db.fetchone(
+            "SELECT COUNT(*) AS c FROM opcodes "
+            "WHERE handler_ea IS NOT NULL AND handler_ea > 0")["c"]
+        jam_types = db.fetchone("SELECT COUNT(*) AS c FROM jam_types")["c"]
+    except Exception:
+        return
+
+    msg_warn("No opcode could be linked to a JAM type. Inventory:")
+    msg_warn(f"    opcodes in DB:            {opcodes} "
+             f"(with a handler address: {with_handler})")
+    msg_warn(f"    jam_types in DB:          {jam_types}")
+    msg_warn("    The link normally comes from the dispatch table in "
+             "wow_opcode_dispatch_<build>.json.")
+    if with_handler == 0:
+        msg_warn("    No opcode carries a handler address, so there is nothing "
+                 "to correlate. Re-run AutoDump for this build: an empty "
+                 "wow_opcode_dispatch is an extractor problem, not a plugin one.")
