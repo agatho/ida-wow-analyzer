@@ -61,6 +61,31 @@ source, still has no importer), `wow_db2_schemas`, `wow_cvars` (402), `wow_spell
   Every step is isolated: a failing step is logged and the run still reaches the export and the
   IDB save.
 - **Per-analyzer probe**: env `TC_ONLY_ANALYZERS=<name>` (or `TC_SKIP_ANALYZERS=`).
+- **`TC_SKIP_IDB_SAVE=1` suppresses only the FINAL save** in `batch/headless.py`.
+  `idb_enrichment` writes its own per-iteration checkpoints and deliberately
+  ignores the variable — an enrichment pass that survives a later crash is worth
+  more than a pristine IDB. Copy the `.i64` first if you need an untouched
+  baseline.
+
+### Run order matters (measured on 12.1.0.69382)
+36 of the 71 analyzers fetch pseudocode via `get_decompiled_text()`, which hits
+`cfunc_cache` in the knowledge DB before invoking Hex-Rays. Decompilation
+dominates the runtime, so a warm cache is the single biggest speedup available:
+
+  1. `analyzers_only` (or the `build_decompile_cache` task) FIRST — fills
+     `cfunc_cache` and applies types via IDB enrichment.
+  2. `full` SECOND — every decompiling analyzer then reads from the cache AND
+     sees *typed* pseudocode, which is both faster and better input.
+
+Six analyzers early-out when their table is already populated
+(`db2_metadata`, `jam_recovery`, `lua_api`, `opcode_dispatcher`,
+`update_fields`, `vtable_analyzer`). With the per-build DB that is safe — the
+rows are guaranteed to belong to this build — but a later fix to one of those
+six will not take effect until its table is cleared.
+
+`topic_deep_extractor` reads pseudocode from `cfunc_cache`, NOT from the IDB,
+so its coverage is a function of how warm the cache was when it ran. A low
+`primary=` count means a cold cache, not a small subsystem.
 
 ## Gotchas (verified against the current code, 2026-08-19)
 - **Build detection**: the **image base of the open IDB decides**. A `build_number` in
