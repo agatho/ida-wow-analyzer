@@ -52,7 +52,11 @@ from tc_wow_analyzer.analyzers.idb_enrichment import (
 
 # Build-resolved at call time (see analyze_hash_resolution). This default is a
 # fallback only; the offline corpus MUST be regenerated per build.
-RESOLUTION_JSON = r"c:/dumps/hash_resolution_67186.json"
+# Resolved per build at call time via dumps_build_path("hash_resolution").
+# The old value froze the 67186 filename into a module constant; every
+# entry point already overrode it locally, but the stale literal kept
+# turning up in greps and docs as if it were the real input.
+RESOLUTION_JSON = None  # see _resolve_hash_resolution() / dumps_build_path("hash_resolution")
 
 
 def _safe_name(s):

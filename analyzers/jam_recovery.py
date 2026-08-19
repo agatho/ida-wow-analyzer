@@ -83,9 +83,13 @@ def analyze_jam_types(session):
         jam_file = os.path.join(extraction_dir,
                                 f"wow_jam_messages_{cfg.build_number}.json")
         if os.path.isfile(jam_file):
-            return _import_jam_types_json(session, jam_file)
+            count = _import_jam_types_json(session, jam_file)
+            if count:
+                return count
+            msg_warn(f"  {os.path.basename(jam_file)} yielded 0 JAM types "
+                     f"— scanning the binary instead")
 
-    msg_warn("No existing JAM extraction found — scanning binary")
+    msg_warn("No usable JAM extraction — scanning binary")
     return _scan_for_jam_patterns(session)
 
 

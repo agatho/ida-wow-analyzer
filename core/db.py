@@ -10,7 +10,7 @@ import json
 import time
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 -- Schema version tracking
@@ -257,6 +257,25 @@ CREATE TABLE IF NOT EXISTS tc_opcodes (
 );
 CREATE INDEX IF NOT EXISTS idx_tc_packets_opcode ON tc_packets(opcode);
 CREATE INDEX IF NOT EXISTS idx_tc_packets_dir ON tc_packets(direction);
+
+-- Decompiled-function cache. Declared here (not only lazily in
+-- core/decompile_cache.py) so that a fresh database always has it and
+-- get_stats()/the Settings dialog can count it without a special case.
+-- `serialized` is NULLable: IDA builds without cfunc_t.serialize() still
+-- produce usable pseudocode, and a NOT NULL column silently rejected every
+-- insert, leaving the cache permanently empty.
+CREATE TABLE IF NOT EXISTS cfunc_cache (
+    ea INTEGER PRIMARY KEY,
+    func_hash TEXT NOT NULL,
+    serialized BLOB,
+    pseudocode TEXT,
+    created_at REAL
+);
+
+-- Indexes that the query patterns above actually need.
+CREATE INDEX IF NOT EXISTS idx_functions_subsystem ON functions(subsystem);
+CREATE INDEX IF NOT EXISTS idx_diffing_new_ea ON diffing(new_ea);
+CREATE INDEX IF NOT EXISTS idx_analyzer_yield_build ON analyzer_yield(build);
 """
 
 
@@ -295,14 +314,97 @@ class KnowledgeDB:
             self._conn = None
 
     def _create_schema(self):
-        """Create tables if they don't exist. Migrate if schema version changed."""
-        cur = self._conn.executescript(SCHEMA_SQL)
-        # Set schema version
+        """Create tables if missing, then run column migrations.
+
+        The old version ran the CREATE-IF-NOT-EXISTS script and then stamped
+        ``schema_version = N`` unconditionally. Since ``CREATE TABLE IF NOT
+        EXISTS`` never touches an existing table, a database built under an
+        older version was relabelled as current while still missing any COLUMN
+        added since — and there was no ALTER TABLE anywhere in the code base.
+        """
+        previous = 0
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM schema_info WHERE key = 'schema_version'"
+            ).fetchone()
+            if row:
+                previous = int(row[0])
+        except sqlite3.Error:
+            previous = 0  # table itself does not exist yet -- fresh database
+
+        self._conn.executescript(SCHEMA_SQL)
+        self._migrate(previous)
+
         self._conn.execute(
             "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
             ("schema_version", str(SCHEMA_VERSION))
         )
         self._conn.commit()
+
+    # Columns added after a table first shipped. Each entry is applied with
+    # ADD COLUMN when absent -- adding to this list is the supported way to
+    # evolve a table without losing an existing database.
+    _COLUMN_MIGRATIONS = (
+        # (table, column, DDL type)
+        ("functions", "subsystem", "TEXT"),
+        ("vtables", "parent_class", "TEXT"),
+        ("vtables", "notes", "TEXT"),
+        ("opcodes", "jam_type", "TEXT"),
+        ("opcodes", "notes", "TEXT"),
+        ("db2_tables", "fields_json", "TEXT"),
+        ("db2_tables", "loadinfo_generated", "INTEGER DEFAULT 0"),
+        ("cfunc_cache", "pseudocode", "TEXT"),
+    )
+
+    def _migrate(self, previous_version):
+        """Apply column-level migrations to an existing database."""
+        if previous_version >= SCHEMA_VERSION:
+            return
+
+        for table, column, ddl in self._COLUMN_MIGRATIONS:
+            try:
+                cols = {row[1] for row in
+                        self._conn.execute(f"PRAGMA table_info({table})")}
+            except sqlite3.Error:
+                continue
+            if not cols or column in cols:
+                continue
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+                print(f"[TC-WoW] DB migration: added {table}.{column}")
+            except sqlite3.Error as exc:
+                print(f"[TC-WoW] DB migration failed for "
+                      f"{table}.{column}: {exc}")
+
+        if previous_version:
+            print(f"[TC-WoW] Knowledge DB migrated from schema v"
+                  f"{previous_version} to v{SCHEMA_VERSION}")
+
+    # ─── Build bookkeeping ────────────────────────────────────────
+
+    def record_build(self, build_number, image_base=None, binary_path=None,
+                     notes=None):
+        """Register the build this database describes.
+
+        The `builds` table had readers (build_delta, multi_build_temporal,
+        cross_build_migration) but NO writer anywhere in the code base, so all
+        three always fell through to their emergency path.
+        """
+        if not build_number:
+            return
+        self.execute(
+            """INSERT INTO builds
+                   (build_number, image_base, binary_path, extraction_date, notes)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(build_number) DO UPDATE SET
+                   image_base = COALESCE(excluded.image_base, image_base),
+                   binary_path = COALESCE(excluded.binary_path, binary_path),
+                   extraction_date = excluded.extraction_date,
+                   notes = COALESCE(excluded.notes, notes)""",
+            (int(build_number), image_base, binary_path,
+             time.strftime("%Y-%m-%d %H:%M:%S"), notes))
+        self.commit()
 
     # ─── Convenience Methods ──────────────────────────────────────
 
@@ -321,7 +423,18 @@ class KnowledgeDB:
     def fetchall(self, sql, params=()):
         return self.conn.execute(sql, params).fetchall()
 
+    #: Tables `count()` may be asked about. The name is interpolated into the
+    #: SQL, so an unchecked caller argument would be an injection point.
+    _COUNTABLE = frozenset({
+        "builds", "functions", "opcodes", "jam_types", "db2_tables", "vtables",
+        "vtable_entries", "lua_api", "update_fields", "annotations", "diffing",
+        "strings", "kv_store", "failure_ledger", "analyzer_yield", "tc_packets",
+        "tc_structs", "tc_opcodes", "cfunc_cache", "schema_info",
+    })
+
     def count(self, table):
+        if table not in self._COUNTABLE:
+            raise ValueError(f"count(): unknown table {table!r}")
         row = self.fetchone(f"SELECT COUNT(*) as cnt FROM {table}")
         return row["cnt"] if row else 0
 
@@ -566,11 +679,18 @@ class KnowledgeDB:
     # ─── Statistics ───────────────────────────────────────────────
 
     def get_stats(self):
-        """Return a dict of table counts for the dashboard."""
+        """Return a dict of table counts for the dashboard.
+
+        Covers every populated table. The old list stopped at 11 of 20, so the
+        "DB contains N records" line on session start understated the database
+        by everything in kv_store, the ledgers and the TC import tables.
+        """
         tables = [
-            "functions", "opcodes", "jam_types", "db2_tables",
+            "builds", "functions", "opcodes", "jam_types", "db2_tables",
             "vtables", "vtable_entries", "lua_api", "update_fields",
-            "annotations", "strings", "diffing"
+            "annotations", "strings", "diffing", "kv_store",
+            "failure_ledger", "analyzer_yield", "tc_packets", "tc_structs",
+            "tc_opcodes", "cfunc_cache",
         ]
         stats = {}
         for t in tables:

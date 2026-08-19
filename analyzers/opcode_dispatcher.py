@@ -208,10 +208,16 @@ def _detect_dispatcher(session):
     msg_info(f"Selected dispatcher: {best_name} at {ea_str(best_ea)} "
              f"(RVA={best_rva:#x}, score={best_score:.1f})")
 
-    # Persist the discovered RVA into the config for future runs
-    cfg.set("known_rvas", "main_dispatcher", best_rva)
+    # Persist the discovered RVA into the config for future runs, scoped to
+    # THIS build. It used to be stored globally, so the next build resolved the
+    # stale RVA against its own image base and "found" the dispatcher at
+    # whatever function happened to live at that offset.
+    known = dict(cfg.known_rvas or {})
+    known["main_dispatcher"] = best_rva
+    cfg.set_build_scoped("known_rvas", known)
     cfg.save()
-    msg_info(f"Saved dispatcher RVA {best_rva:#x} to config")
+    msg_info(f"Saved dispatcher RVA {best_rva:#x} to config "
+             f"(build {cfg.build_number or 'unknown'})")
 
     # Also store in the KV store so the DB records the discovery
     if db:
@@ -287,8 +293,15 @@ def analyze_opcode_dispatcher(session):
     # Try to identify handler functions by looking for functions that
     # call known deserializer patterns (WriteUInt32, etc.)
     count = 0
-    dispatch_start = int(disp.get("start", 0x420000))
-    dispatch_count = int(disp.get("count", 891))
+    # No 66xxx-era defaults (0x420000 / 891). A missing dispatch range means the
+    # importer never populated one, and inventing indices from an old build
+    # produced opcode rows that looked real and were not.
+    if not disp.get("start") or not disp.get("count"):
+        msg_error("Dispatch range incomplete (start/count missing) — refusing "
+                  "to synthesise opcode indices from stale defaults")
+        return 0
+    dispatch_start = int(disp["start"])
+    dispatch_count = int(disp["count"])
 
     for i, callee_ea in enumerate(sorted(callees)):
         callee_name = ida_name.get_name(callee_ea)

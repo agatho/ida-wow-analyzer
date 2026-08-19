@@ -38,7 +38,11 @@ from tc_wow_analyzer.analyzers.idb_enrichment import (
 
 
 # Build-resolved at call time (see analyze_typename_apply); default fallback only.
-INVENTORY = r"c:/dumps/typename_inventory_67186.json"
+# Resolved per build at call time via dumps_build_path("typename_inventory").
+# The old value froze the 67186 filename into a module constant; every
+# entry point already overrode it locally, but the stale literal kept
+# turning up in greps and docs as if it were the real input.
+INVENTORY = None  # see _resolve_typename_inventory() / dumps_build_path("typename_inventory")
 
 
 def _set_data_name(ea, desired):

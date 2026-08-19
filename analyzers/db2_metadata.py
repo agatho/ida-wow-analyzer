@@ -110,7 +110,17 @@ def analyze_db2_metadata(session):
         msg_warn(f"DB2 metadata file not found: {meta_file}")
         return _scan_for_db2_meta_patterns(session)
 
-    return _import_db2_metadata_json(session, meta_file)
+    count = _import_db2_metadata_json(session, meta_file)
+    if count:
+        return count
+
+    # An EXISTING but empty dump used to end the analyzer right here. Build
+    # 69382 ships a 2.7 KB wow_db2_metadata (vs 473 KB on 67186), so the binary
+    # scan — the whole reason the fallback exists — never ran.
+    msg_warn(f"  {os.path.basename(meta_file)} yielded 0 tables "
+             f"({os.path.getsize(meta_file)} bytes) — scanning the binary "
+             f"for DB2 metadata patterns instead")
+    return _scan_for_db2_meta_patterns(session)
 
 
 def _import_db2_metadata_json(session, meta_file):

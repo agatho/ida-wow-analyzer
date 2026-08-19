@@ -34,7 +34,8 @@ import sqlite3
 import time
 from collections import Counter
 
-from tc_wow_analyzer.core.utils import msg_info, msg_warn
+from tc_wow_analyzer.core.utils import (
+    msg_info, msg_warn, current_build, dumps_dir)
 
 _FN_HEADER_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
 _NAME_NOISE = {"void","char","short","int","long","float","double","bool","unsigned",
@@ -44,16 +45,33 @@ _NAME_NOISE = {"void","char","short","int","long","float","double","bool","unsig
 _CALL_RE = re.compile(r"\b([A-Za-z_][\w]+)\s*\(")
 _SUB_RE  = re.compile(r"\bsub_([0-9A-F]+)\b")
 
-_PRIMITIVES = {
-    "ClientOpcode_helper_318EF90", "ClientOpcode_helper_31E0120",
-    "ClientOpcode_helper_61E3F0", "ClientOpcode_helper_645F70",
-    "ClientOpcode_helper_318F590",
-    "ai_Read_CompressedUInt32FromPacket", "ai_Read_CompressedUInt32FromPacket_48E0",
-    "ai_Read_CompressedUInt32FromPacket_B6A0", "ai_Read_CompressedFloatFromPacket",
+# Wire-primitive readers. HALF of these names carry a 67186 RVA suffix
+# ("..._318EF90"), so on any other build the exact-match set never hit and
+# `primitives` came out empty. Matching on the stable stem keeps it working
+# across builds; the literal set is kept for exact hits.
+_PRIMITIVE_EXACT = {
+    "ai_Read_CompressedUInt32FromPacket", "ai_Read_CompressedFloatFromPacket",
     "ai_Read_BitFieldData", "ai_Read_LuaByteValue", "ai_Read_FileDataWithTimeout",
     "ai_Read_UInt8FromPacket", "ai_Read_UInt32FromPacket",
     "ai_Read_UInt64FromPacket", "ai_Read_PackedGuidFromPacket",
 }
+
+# stem -> matches "<stem>" and "<stem>_<HEXRVA>"
+_PRIMITIVE_RE = re.compile(
+    r"^(ClientOpcode_helper"
+    r"|ai_Read_CompressedUInt32FromPacket"
+    r"|ai_Read_CompressedFloatFromPacket"
+    r"|ai_Read_BitFieldData"
+    r"|ai_Read_LuaByteValue"
+    r"|ai_Read_FileDataWithTimeout"
+    r"|ai_Read_UInt(?:8|16|32|64)FromPacket"
+    r"|ai_Read_PackedGuidFromPacket"
+    r")(?:_[0-9A-Fa-f]{4,})?$")
+
+
+def _is_primitive(name):
+    """True if *name* is a wire-serialisation primitive, on any build."""
+    return name in _PRIMITIVE_EXACT or bool(_PRIMITIVE_RE.match(name or ""))
 
 _TOPIC_RE = {
     "delve":        re.compile(r"delve", re.I),
@@ -63,7 +81,9 @@ _TOPIC_RE = {
     "neighborhood": re.compile(r"neighborhood", re.I),
 }
 
-_DBD_DIR        = r"c:/dumps/WoWDBDefs/definitions"
+def _dbd_dir():
+    """WoWDBDefs checkout, resolved against the configured dumps dir."""
+    return os.path.join(dumps_dir(), "WoWDBDefs", "definitions")
 
 
 def _extract_func_name(line):
@@ -87,15 +107,32 @@ def _extract_callees(pseudocode, self_name):
 
 
 def _build_paths(build):
+    """Resolve every input through the configured dumps dir and the live DB.
+
+    All eight paths were hardcoded to ``c:/dumps``, and ``cache_db`` additionally
+    pointed at the build-agnostic ``wow_dump.bin.tc_wow.db`` — so on a new build
+    this analyzer read the PREVIOUS build's pseudocode cache.
+    """
+    root = dumps_dir()
+
+    def p(name):
+        return os.path.join(root, name)
+
+    try:
+        from tc_wow_analyzer.core.config import cfg as _cfg
+        cache_db = _cfg.db_path
+    except Exception:
+        cache_db = p("wow_dump.bin.tc_wow.db")
+
     return {
-        "offsets":  f"c:/dumps/wow_offsets_{build}.json",
-        "rtti":     f"c:/dumps/wow_rtti_{build}.json",
-        "xrefs":    f"c:/dumps/wow_string_xrefs_{build}.json",
-        "tn":       f"c:/dumps/typename_inventory_{build}.json",
-        "jam_full": f"c:/dumps/wow_jam_types_full_{build}.json",
-        "tc_ops":   f"c:/dumps/tc_opcodes_{build}.json",
-        "hash_res": f"c:/dumps/hash_resolution_{build}.json",
-        "cache_db": r"c:/dumps/wow_dump.bin.tc_wow.db",
+        "offsets":  p(f"wow_offsets_{build}.json"),
+        "rtti":     p(f"wow_rtti_{build}.json"),
+        "xrefs":    p(f"wow_string_xrefs_{build}.json"),
+        "tn":       p(f"typename_inventory_{build}.json"),
+        "jam_full": p(f"wow_jam_types_full_{build}.json"),
+        "tc_ops":   p(f"tc_opcodes_{build}.json"),
+        "hash_res": p(f"hash_resolution_{build}.json"),
+        "cache_db": cache_db,
     }
 
 
@@ -120,6 +157,17 @@ def _load_cache(cache_path):
     return fn_pseudo, fn_name
 
 
+def _ea_to_rva(ea):
+    """RVA of *ea* against the LOADED image base.
+
+    Was `ea - 0x7FF75BB50000`, the 12.0.5/67186 base. On 12.1.0/69382
+    (0x7FF780FD0000) every exported RVA was off by 0x25480000 -- in the topic
+    JSON, the _FULL_V2_ markdown and the generated mega_import script alike.
+    """
+    from tc_wow_analyzer.core.config import cfg
+    return cfg.ea_to_rva(ea)
+
+
 def _run_for_topic(topic, build, paths):
     topic_re = _TOPIC_RE[topic]
     pretty = topic.title()
@@ -141,9 +189,9 @@ def _run_for_topic(topic, build, paths):
         nm = fn_name[ea]
         strs = sorted({m.group(1) for m in re.finditer(r'"([^"\n]{4,120})"', ps) if topic_re.search(m.group(1))})
         callees = _extract_callees(ps, nm)
-        prims = [c for c in callees if c in _PRIMITIVES]
+        prims = [c for c in callees if _is_primitive(c)]
         fn_info[ea] = {
-            "ea": f"0x{ea:X}", "rva": f"0x{ea - 0x7FF75BB50000:X}",
+            "ea": f"0x{ea:X}", "rva": f"0x{_ea_to_rva(ea):X}",
             "name": nm, "matching_strings": strs,
             "callees_top": dict(callees.most_common(30)),
             "callee_count": len(callees),
@@ -217,10 +265,11 @@ def _run_for_topic(topic, build, paths):
                             cvars.append({"hash_kind": kind, "hash": h, "name": v})
 
     dbd_schemas = []
-    if os.path.isdir(_DBD_DIR):
-        for fname in os.listdir(_DBD_DIR):
+    dbd_dir = _dbd_dir()
+    if os.path.isdir(dbd_dir):
+        for fname in os.listdir(dbd_dir):
             if fname.endswith(".dbd") and topic_re.search(fname[:-4]):
-                with open(os.path.join(_DBD_DIR, fname), encoding="utf-8", errors="ignore") as f:
+                with open(os.path.join(dbd_dir, fname), encoding="utf-8", errors="ignore") as f:
                     dbd_schemas.append({"table": fname[:-4], "raw": f.read()[:2000]})
 
     payload = {
@@ -251,7 +300,7 @@ def _run_for_topic(topic, build, paths):
         "rtti_classes": rtti_classes, "tc_opcodes": tc_opcodes,
         "cvars": cvars, "dbd_schemas": dbd_schemas,
     }
-    out_json = f"c:/dumps/{topic}_extract_v2_{build}.json"
+    out_json = os.path.join(dumps_dir(), f"{topic}_extract_v2_{build}.json")
     with open(out_json, "w") as f:
         json.dump(payload, f, indent=2)
 
@@ -263,7 +312,13 @@ def _run_for_topic(topic, build, paths):
 def analyze_topic_deep_extractor(session):
     t0 = time.time()
     db = session.db
-    build = getattr(session, "build_number", None) or "67186"
+    # PluginSession has no `build_number` attribute (only cfg/db/hooks),
+    # so this getattr ALWAYS fell through to the literal "67186" — pinning
+    # the analyzer to 12.0.5 dumps no matter which build was open.
+    build = current_build() or getattr(session.cfg, "build_number", 0)
+    if not build:
+        msg_warn("  build number unknown — refusing to guess an AutoDump build")
+        return 0
     paths = _build_paths(build)
 
     totals = {}

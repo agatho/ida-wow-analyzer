@@ -39,7 +39,11 @@ from tc_wow_analyzer.analyzers.idb_enrichment import (
 
 
 # Build-resolved at call time (see analyze_cvar_consumer_tag); default fallback only.
-CALLSITE_JSON = r"c:/dumps/cvar_callsite_map_67186.json"
+# Resolved per build at call time via dumps_build_path("cvar_callsite_map").
+# The old value froze the 67186 filename into a module constant; every
+# entry point already overrode it locally, but the stale literal kept
+# turning up in greps and docs as if it were the real input.
+CALLSITE_JSON = None  # see _resolve_cvar_callsite_map() / dumps_build_path("cvar_callsite_map")
 
 
 def analyze_cvar_consumer_tag(session):

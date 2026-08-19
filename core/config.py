@@ -89,6 +89,7 @@ class PluginConfig:
 
     def __init__(self):
         self._data = json.loads(json.dumps(_DEFAULTS))  # deep copy
+        self._detected_build = None  # cache for build_number (see property)
         self._load()
 
     # ------------------------------------------------------------------
@@ -98,13 +99,10 @@ class PluginConfig:
     def _load(self):
         """Load config from multiple sources with increasing priority."""
 
-        # Priority 1: Pipeline config (existing infrastructure)
-        pipeline_dir = self._data.get("pipeline_dir")
-        if pipeline_dir:
-            pipeline_cfg = os.path.join(pipeline_dir, "pipeline_config.json")
-            self._merge_file(pipeline_cfg)
-
-        # Priority 2: Plugin-specific config next to this package
+        # Priority 2 first: the plugin-level config is where `pipeline_dir`
+        # actually comes from. Reading `pipeline_dir` out of `_data` before any
+        # file had been merged meant it was ALWAYS None on the constructor run,
+        # so the documented "priority 1" source never applied.
         module_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         plugin_cfg = os.path.join(module_dir, "tc_wow_config.json")
         self._merge_file(plugin_cfg)
@@ -116,10 +114,18 @@ class PluginConfig:
             idb_cfg = os.path.join(idb_dir, "tc_wow_config.json")
             self._merge_file(idb_cfg)
 
-            # Auto-compute DB path if not explicitly set
-            if not self._data.get("db_path"):
-                base = os.path.splitext(idb_path)[0]
-                self._data["db_path"] = base + ".tc_wow.db"
+        # Priority 1 (lowest, applied last only for keys still unset): the
+        # pipeline config, now that pipeline_dir is known.
+        pipeline_dir = self._data.get("pipeline_dir")
+        if pipeline_dir:
+            pipeline_cfg = os.path.join(pipeline_dir, "pipeline_config.json")
+            existing = json.loads(json.dumps(self._data))
+            self._merge_file(pipeline_cfg)
+            # keys already set by the higher-priority files win
+            self._deep_merge(self._data, existing)
+
+        # NOTE: db_path is NOT frozen here. It is computed by the property so
+        # that it always carries the *current* build number — see `db_path`.
 
     def _merge_file(self, path):
         """Merge a JSON config file into current data."""
@@ -206,6 +212,16 @@ class PluginConfig:
         try:
             # Build a clean copy, converting any 0-valued RVAs to 0 (not None)
             out = json.loads(json.dumps(self._data, default=str))
+            # save() writes the fully MERGED config, so a build_number inherited
+            # from the plugin-level file used to be copied into the IDB-local
+            # file too and outlived any cleanup at the source. Persist the
+            # *validated* build instead, and never persist a stale db_path.
+            detected = self.build_number
+            if detected:
+                out["build_number"] = detected
+            else:
+                out.pop("build_number", None)
+            out.pop("db_path", None)
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(out, f, indent=2, sort_keys=False)
             print(f"[TC-WoW] Config saved to {path}")
@@ -220,18 +236,38 @@ class PluginConfig:
 
     @property
     def db_path(self):
-        """Path to the per-IDB SQLite database.
+        """Path to the per-BUILD SQLite knowledge database.
 
-        Dynamically computes from the IDB path if not already set,
-        since the config singleton may be created before the IDB is loaded.
+        The path carries the build number: ``wow_dump.bin.69382.tc_wow.db``.
+
+        WHY: AutoDump always overwrites ``wow_dump.bin`` (and therefore the
+        ``.i64``), so a build-agnostic name meant one single database served
+        every build ever analysed. None of `functions`/`opcodes`/`vtables`/
+        `strings` carries a build column, so 12.0.5 EAs and 12.1.0 EAs ended up
+        side by side, unmarked — and the many
+        ``if db.count(t) > 0: return "already in DB"`` early-outs then reported
+        the *previous* build's addresses as a fresh, successful extraction.
+
+        An explicit ``db_path`` in the config still wins, but only if it already
+        refers to this build; a stale one is ignored with a warning rather than
+        silently reused.
         """
-        path = self._data.get("db_path")
-        if not path:
-            idb_path = self._idb_path()
-            if idb_path:
-                path = os.path.splitext(idb_path)[0] + ".tc_wow.db"
-                self._data["db_path"] = path
-        return path or ""
+        idb_path = self._idb_path()
+        build = self.build_number
+        explicit = self._data.get("db_path")
+
+        if explicit:
+            if not build or str(build) in os.path.basename(explicit):
+                return explicit
+            print(f"[TC-WoW] Config: ignoring db_path {explicit!r} — it does "
+                  f"not belong to build {build}. Using the per-build path "
+                  f"instead; set db_path explicitly to override.")
+
+        if not idb_path:
+            return explicit or ""
+
+        base = os.path.splitext(idb_path)[0]
+        return f"{base}.{build}.tc_wow.db" if build else base + ".tc_wow.db"
 
     @property
     def image_base(self):
@@ -241,18 +277,95 @@ class PluginConfig:
 
     @property
     def build_number(self):
-        """Detect build number from image_base match or explicit ``build_number`` key."""
-        # Explicit override takes priority
-        explicit = self._data.get("build_number")
-        if explicit:
-            return int(explicit)
+        """Build number of the CURRENTLY LOADED image.
 
-        # Match by image_base
-        current_base = self.image_base
-        for build_str, info in self._data.get("builds", {}).items():
-            if isinstance(info, dict) and info.get("image_base") == current_base:
-                return int(build_str)
+        Detection order is deliberate: the image base of the open IDB decides,
+        and a configured ``build_number`` is only a fallback.
+
+        WHY THIS ORDER: it used to be the other way round. ``tc_wow_config.json``
+        carried ``"build_number": 67186``, so opening the freshly built
+        12.1.0.69382 IDB still reported 67186 — which made
+        ``dumps_build_path()`` and ``autodump_candidates()`` load
+        ``wow_*_67186.json`` and apply 12.0.5 RVAs to the 12.1 image. Silently.
+        An explicit value that contradicts the image base is now a loud warning,
+        not the answer.
+        """
+        if self._detected_build is not None:
+            return self._detected_build
+
+        explicit = self._data.get("build_number")
+        try:
+            explicit = int(explicit) if explicit else 0
+        except (TypeError, ValueError):
+            explicit = 0
+
+        builds = self._data.get("builds", {})
+        current_base = None
+        try:
+            current_base = self.image_base
+        except Exception:
+            pass  # no IDB open yet (config singleton built at import time)
+
+        matched = 0
+        if current_base:
+            for build_str, info in builds.items():
+                if isinstance(info, dict) and info.get("image_base") == current_base:
+                    try:
+                        matched = int(build_str)
+                    except (TypeError, ValueError):
+                        continue
+                    break
+
+        if matched:
+            if explicit and explicit != matched:
+                print(f"[TC-WoW] Config WARNING: build_number={explicit} in the "
+                      f"config contradicts the loaded image base "
+                      f"0x{current_base:X}, which belongs to build {matched}. "
+                      f"Using {matched}. Fix build_number to silence this.")
+            self._detected_build = matched
+            return matched
+
+        if explicit:
+            expected = builds.get(str(explicit), {}).get("image_base") \
+                if isinstance(builds.get(str(explicit)), dict) else None
+            if current_base and expected and expected != current_base:
+                print(f"[TC-WoW] Config WARNING: build {explicit} is configured "
+                      f"with image base 0x{expected:X} but the loaded image is "
+                      f"at 0x{current_base:X}. Build-specific dumps and RVAs "
+                      f"will NOT match this binary.")
+            elif current_base and not expected:
+                print(f"[TC-WoW] Config: using configured build_number "
+                      f"{explicit} (no image_base recorded for it — add one "
+                      f"under builds[\"{explicit}\"].image_base so mismatches "
+                      f"can be detected).")
+            self._detected_build = explicit
+            return explicit
+
+        if current_base:
+            print(f"[TC-WoW] Config WARNING: unknown build. No builds[] entry "
+                  f"matches image base 0x{current_base:X} and no build_number "
+                  f"is set. Build-scoped lookups (AutoDump files, yields, "
+                  f"regression detection) are DISABLED until this is fixed.")
+        self._detected_build = 0
         return 0
+
+    def invalidate_build_cache(self):
+        """Forget the detected build (call after editing builds/build_number)."""
+        self._detected_build = None
+
+    @property
+    def dumps_dir(self):
+        """Directory holding the AutoDump artifacts for the current build.
+
+        Replaces the hardcoded ``C:\\dumps`` in core/utils.py, which made every
+        build-resolved input path machine-specific.
+        """
+        bn = self.build_number
+        if bn:
+            info = self._data.get("builds", {}).get(str(bn), {})
+            if isinstance(info, dict) and info.get("extraction_dir"):
+                return info["extraction_dir"]
+        return self._data.get("extraction_dir") or r"C:\dumps"
 
     @property
     def extraction_dir(self):
@@ -280,19 +393,45 @@ class PluginConfig:
         """Directory containing DB2 client data files (dbfilesclient)."""
         return self._data.get("db2_data_dir") or ""
 
+    def _build_scoped(self, key, default):
+        """Read ``builds.<build>.<key>``, falling back to the global section.
+
+        WHY: RVAs are build-specific by definition. ``known_rvas`` and
+        ``dispatch_range`` were stored globally and then re-applied through
+        ``rva_to_ea()`` against the NEXT build's image base — pointing the
+        "main dispatcher" at whatever happens to live at that offset now.
+        Build-scoped values are preferred; the global section is kept as a
+        fallback so existing configs keep working.
+        """
+        bn = self.build_number
+        if bn:
+            info = self._data.get("builds", {}).get(str(bn))
+            if isinstance(info, dict) and isinstance(info.get(key), dict) \
+                    and info[key]:
+                return info[key]
+        return self._data.get(key, default)
+
+    def set_build_scoped(self, key, value):
+        """Write ``builds.<build>.<key>`` (falls back to global if build is 0)."""
+        bn = self.build_number
+        if bn:
+            self.set("builds", str(bn), key, value)
+        else:
+            self.set(key, value)
+
     @property
     def known_rvas(self):
-        return self._data.get("known_rvas", {})
+        return self._build_scoped("known_rvas", {})
 
     @property
     def dispatch_range(self):
-        return self._data.get("dispatch_range", {})
+        return self._build_scoped("dispatch_range", {})
 
     @property
     def serializer_rvas(self):
         """Return known serializer function RVAs."""
-        # Check for explicit serializer_rvas section first
-        explicit = self._data.get("serializer_rvas")
+        # Build-scoped section first, then the global one.
+        explicit = self._build_scoped("serializer_rvas", {})
         if explicit:
             return explicit
         # Fall back to building from known_rvas
@@ -308,7 +447,13 @@ class PluginConfig:
 
     @property
     def is_configured(self):
-        """True if at least one build entry has an extraction_dir set."""
+        """True if any extraction directory is known.
+
+        Used to gate the "please configure me" first-run banner, which used to
+        show forever whenever only the global `extraction_dir` was set.
+        """
+        if self._data.get("extraction_dir"):
+            return True
         for _build_str, info in self._data.get("builds", {}).items():
             if isinstance(info, dict) and info.get("extraction_dir"):
                 return True
@@ -319,9 +464,21 @@ class PluginConfig:
     # ------------------------------------------------------------------
 
     def rva_to_ea(self, rva):
-        """Convert an RVA to an effective address using the current image base."""
+        """Convert an RVA to an effective address using the current image base.
+
+        Accepts int, "0x1D9E00" and bare "1D9E00" -- AutoDump JSON mixes the
+        prefixed and unprefixed forms, and the old int(rva) path raised
+        ValueError on the latter.
+        """
         if isinstance(rva, str):
-            rva = int(rva, 16) if rva.startswith("0x") else int(rva)
+            text = rva.strip()
+            if text.lower().startswith("0x"):
+                rva = int(text, 16)
+            else:
+                try:
+                    rva = int(text)
+                except ValueError:
+                    rva = int(text, 16)
         return self.image_base + rva
 
     def ea_to_rva(self, ea):

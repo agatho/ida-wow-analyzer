@@ -50,7 +50,11 @@ from tc_wow_analyzer.analyzers.idb_enrichment import (
 
 
 # Build-resolved at call time (see analyze_hash_func_naming); default fallback only.
-CANDIDATES_JSON = r"c:/dumps/fnv_candidates_67186.json"
+# Resolved per build at call time via dumps_build_path("fnv_candidates").
+# The old value froze the 67186 filename into a module constant; every
+# entry point already overrode it locally, but the stale literal kept
+# turning up in greps and docs as if it were the real input.
+CANDIDATES_JSON = None  # see _resolve_fnv_candidates() / dumps_build_path("fnv_candidates")
 
 
 def _classify(hit):

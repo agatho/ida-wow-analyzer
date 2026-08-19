@@ -29,7 +29,7 @@ import re
 import time
 from collections import defaultdict
 
-from tc_wow_analyzer.core.utils import msg_info, msg_warn
+from tc_wow_analyzer.core.utils import msg_info, msg_warn, current_build, dumps_dir
 
 _JAM_NAME_RE = re.compile(r"\b(Jam[A-Z][A-Za-z0-9_]+)\b")
 _MIRROR_SIG_RE = re.compile(
@@ -38,7 +38,7 @@ _MIRROR_SIG_RE = re.compile(
 
 
 def _build_path(build, basename):
-    return f"c:/dumps/{basename}_{build}.json"
+    return os.path.join(dumps_dir(), f"{basename}_{build}.json")
 
 
 def _load_autodump(build):
@@ -91,7 +91,13 @@ def analyze_jam_type_discovery(session):
     """Plugin analyzer entry point."""
     t0 = time.time()
     db = session.db
-    build = getattr(session, "build_number", None) or "67186"
+    # PluginSession has no `build_number` attribute (only cfg/db/hooks),
+    # so this getattr ALWAYS fell through to the literal "67186" — pinning
+    # the analyzer to 12.0.5 dumps no matter which build was open.
+    build = current_build() or getattr(session.cfg, "build_number", 0)
+    if not build:
+        msg_warn("  build number unknown — refusing to guess an AutoDump build")
+        return 0
 
     autodump = _load_autodump(build)
     inv = _load_typenames(build)

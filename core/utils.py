@@ -294,6 +294,11 @@ def get_skiplist_count():
 
 _MAX_FUNC_SIZE = 2_000_000  # bytes — skip functions larger than 2MB
 
+# Soft (non-crashing) decompile failures are retried this many times per session
+# before the address is written to the persistent skiplist.
+_SOFT_FAILURE_LIMIT = 3
+_soft_failures = {}
+
 # When True, safe_decompile returns None for uncached functions instead
 # of calling the decompiler.  Set by batch runner to prevent GUI crashes.
 _decompile_cache_only = False
@@ -315,8 +320,24 @@ def set_default_db(db):
 # silently no-ops on a new build. These helpers resolve the active build so the
 # 67186 -> 12.0.7 (68235) migration picks up the right files.
 
-_DUMPS_DIR = r"C:\dumps"
+# Fallback only — the real value comes from cfg.dumps_dir (build-scoped
+# extraction_dir, then the global one). Hardcoding it made every
+# build-resolved input path machine-specific: on any other layout
+# first_existing() returned None and the analyzers "succeeded" with 0 results.
+_DUMPS_FALLBACK = r"C:\dumps"
 _current_build = None
+
+
+def dumps_dir():
+    """Directory holding AutoDump artifacts for the active build."""
+    try:
+        from tc_wow_analyzer.core.config import cfg
+        value = cfg.dumps_dir
+        if value:
+            return value
+    except Exception:
+        pass
+    return _DUMPS_FALLBACK
 
 
 def set_build_number(bn):
@@ -342,38 +363,102 @@ def current_build():
 
 
 def dumps_build_path(stem, build=None, ext="json"):
-    """`c:\\dumps\\<stem>_<build>.<ext>` for the active build (NO archive fallback).
+    """`<dumps_dir>/<stem>_<build>.<ext>` for the active build (NO archive fallback).
 
     For build-specific offline artifacts (hash resolutions, candidate corpora)
     that MUST be regenerated per build — falling back to an old build would apply
     wrong addresses. If the build is unknown, returns the unsuffixed name."""
     b = build if build is not None else current_build()
+    root = dumps_dir()
     if b:
-        return os.path.join(_DUMPS_DIR, f"{stem}_{b}.{ext}")
-    return os.path.join(_DUMPS_DIR, f"{stem}.{ext}")
+        return os.path.join(root, f"{stem}_{b}.{ext}")
+    return os.path.join(root, f"{stem}.{ext}")
 
 
-def autodump_candidates(stem, archive_builds=(67186, 66838, 66198), ext="json"):
-    """Ordered candidate paths for an AutoDump artifact: current-build file first,
-    then the unsuffixed name, then archived prior builds (`c:\\dumps_<b>\\`).
+def archive_builds():
+    """Archived build numbers, newest first, discovered from `<dumps_dir>_*`.
 
-    For schema-stable inputs (rtti/ctor/vtable/globals/packets) where an archive
-    is an acceptable fallback when the current-build dump isn't present yet."""
+    Used to be a hardcoded tuple `(67186, 66838, 66198)`, which silently went
+    stale: 68275 was archived and never added, so its data was unreachable while
+    older builds still were.
+    """
+    root = dumps_dir()
+    parent = os.path.dirname(root.rstrip("\\/")) or "."
+    prefix = os.path.basename(root.rstrip("\\/")) + "_"
+    found = []
+    try:
+        for name in os.listdir(parent):
+            if not name.startswith(prefix):
+                continue
+            suffix = name[len(prefix):]
+            if suffix.isdigit():
+                found.append(int(suffix))
+    except Exception:
+        pass
+    return tuple(sorted(found, reverse=True))
+
+
+def autodump_candidates(stem, archive_builds_override=None, ext="json",
+                        allow_archive=True):
+    """Ordered candidate paths for an AutoDump artifact.
+
+    Current-build file first, then the unsuffixed name, then archived prior
+    builds (`<dumps_dir>_<build>/`).
+
+    IMPORTANT: an archive hit means data from a DIFFERENT binary. The addresses
+    inside (vtable_rva, globals, meta_rva) belong to that build, so applying
+    them to the loaded image mislabels it. The fallback stays available for
+    genuinely schema-stable inputs, but:
+
+      * if the build is unknown, NO archive candidates are offered at all
+        (an unknown build means we cannot even tell whether it would be wrong);
+      * `first_existing()` warns whenever the path it returns is an archive.
+
+    Pass ``allow_archive=False`` for anything address-bearing.
+    """
     cands = []
+    root = dumps_dir()
     b = current_build()
     if b:
-        cands.append(os.path.join(_DUMPS_DIR, f"{stem}_{b}.{ext}"))
-    cands.append(os.path.join(_DUMPS_DIR, f"{stem}.{ext}"))
-    for ab in archive_builds:
-        cands.append(os.path.join(f"{_DUMPS_DIR}_{ab}", f"{stem}_{ab}.{ext}"))
+        cands.append(os.path.join(root, f"{stem}_{b}.{ext}"))
+    cands.append(os.path.join(root, f"{stem}.{ext}"))
+
+    if not allow_archive:
+        return cands
+    if not b:
+        # Unknown build: refuse to guess. Previously this skipped straight to
+        # the oldest archives and applied 67186 RVAs to whatever was loaded.
+        return cands
+
+    archives = archive_builds_override if archive_builds_override is not None \
+        else archive_builds()
+    for ab in archives:
+        if ab == b:
+            continue
+        cands.append(os.path.join(f"{root}_{ab}", f"{stem}_{ab}.{ext}"))
     return cands
 
 
-def first_existing(paths):
-    """Return the first path in *paths* that exists on disk, or None."""
+def first_existing(paths, warn_on_archive=True):
+    """Return the first path in *paths* that exists on disk, or None.
+
+    Warns when the hit comes from an archived build directory: silently reading
+    another build's dump is the single most damaging failure mode here, and it
+    used to leave no trace at all in the log.
+    """
+    root = dumps_dir().rstrip("\\/")
     for p in paths:
         try:
             if p and os.path.isfile(p):
+                if warn_on_archive:
+                    parent = os.path.dirname(p).rstrip("\\/")
+                    if parent and parent != root and \
+                            os.path.basename(parent).startswith(
+                                os.path.basename(root) + "_"):
+                        msg_warn(
+                            f"  using ARCHIVED dump {p} — this is a different "
+                            f"build than the loaded image; any address inside "
+                            f"it is wrong for this binary")
                 return p
         except Exception:
             pass
@@ -385,7 +470,7 @@ def safe_decompile(ea):
 
     Returns the cfunc object on success, None if:
       - The address is in the skip list (previous crash)
-      - The function is too large (>200KB, likely to hang/OOM)
+      - The function is too large (> _MAX_FUNC_SIZE, likely to hang/OOM)
       - Cache-only mode is active and function isn't cached
       - Hex-Rays raises a Python exception
       - The decompiler returns None
@@ -418,12 +503,21 @@ def safe_decompile(ea):
         cfunc = ida_hexrays.decompile(ea)
         _clear_canary()
         return cfunc
-    except Exception:
+    except Exception as exc:
         _clear_canary()
-        # Soft failure (Python exception, not a crash) — still add to skip list
-        # to avoid retrying expensive failures
-        _decompile_skiplist.add(ea)
-        _save_skiplist()
+        # Soft failure (Python exception, not a hard crash). A HARD crash is
+        # caught by the canary and blacklists immediately — that is correct.
+        # A soft one is often transient (Hex-Rays not initialised yet, a
+        # temporary out-of-memory), and blacklisting on the first occurrence
+        # permanently removed the function from every future run. Give it a
+        # small budget instead.
+        count = _soft_failures.get(ea, 0) + 1
+        _soft_failures[ea] = count
+        if count >= _SOFT_FAILURE_LIMIT:
+            msg_warn(f"Blacklisting {ea_str(ea)} after {count} soft decompile "
+                     f"failures (last: {type(exc).__name__}: {exc})")
+            _decompile_skiplist.add(ea)
+            _save_skiplist()
         return None
 
 
@@ -446,6 +540,12 @@ def get_decompiled_text(ea, db=None):
                 return cached
         except ImportError:
             pass
+        except Exception as exc:
+            # Only ImportError used to be caught here, so a perfectly ordinary
+            # sqlite3.OperationalError ("no such table: cfunc_cache", "database
+            # is locked") propagated out and took the calling analyzer with it.
+            msg_warn(f"  pseudocode cache lookup failed at {ea_str(ea)}: "
+                     f"{type(exc).__name__}: {exc}")
 
     cfunc = safe_decompile(ea)
     if cfunc:
@@ -461,7 +561,9 @@ def get_decompiled_text(ea, db=None):
                 if func_hash:
                     try:
                         blob = cfunc.serialize()
-                    except (AttributeError, Exception):
+                    except Exception:
+                        # Not every IDA build exposes serialize(); the text is
+                        # still worth caching. `serialized` is NULLable now.
                         blob = None
                     db.execute(
                         "INSERT OR REPLACE INTO cfunc_cache "
@@ -470,8 +572,11 @@ def get_decompiled_text(ea, db=None):
                         (ea, func_hash, blob, text, time.time())
                     )
                     db.commit()
-            except Exception:
-                pass
+            except Exception as exc:
+                # Was a bare `pass`: with `serialized BLOB NOT NULL` every
+                # insert failed and the cache silently stayed empty forever.
+                msg_warn(f"  could not cache pseudocode for {ea_str(ea)}: "
+                         f"{type(exc).__name__}: {exc}")
         return text
     return None
 
@@ -554,7 +659,10 @@ def wait_for_analysis():
 
 def run_on_main_thread(func, *args):
     """Execute a function on IDA's main thread and return the result.
-    Use this when calling IDA API from background threads."""
+
+    Use this when calling IDA API from background threads. Runs under
+    MFF_WRITE so the IDB is locked for the duration.
+    """
     result = [None]
     exc = [None]
 
@@ -565,7 +673,10 @@ def run_on_main_thread(func, *args):
             exc[0] = e
         return 1
 
-    idaapi.execute_sync(wrapper, idaapi.MFF_FAST)
+    # MFF_WRITE, not MFF_FAST. This helper exists to call IDA APIs from
+    # background threads, and MFF_FAST takes no database lock at all — which
+    # is exactly the guarantee the caller is asking for.
+    idaapi.execute_sync(wrapper, idaapi.MFF_WRITE)
     if exc[0]:
         raise exc[0]
     return result[0]

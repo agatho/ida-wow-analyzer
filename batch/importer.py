@@ -19,9 +19,102 @@ Supported files (where {build} is the configured build number):
 
 import json
 import os
+import re
 import time
 
 from tc_wow_analyzer.core.utils import msg, msg_info, msg_warn, msg_error
+
+
+def _verify_build_matches_image(session, dumps_dir, build):
+    """Refuse to import AutoDump data that belongs to a different binary.
+
+    THE FAILURE THIS PREVENTS: `cfg.build_number` used to be taken from an
+    explicit config key that outlived the binary it described. A stale 67186
+    then selected `wow_*_67186.json`, and because `cfg.rva_to_ea()` always uses
+    the CURRENT image base, every RVA in those files was rebased onto the new
+    image — thousands of wrong names, types and comments written into the IDB
+    with no error anywhere.
+
+    AutoDump records the image base in `wow_debug_<build>.json`; when that is
+    available we compare it against the loaded image and stop on mismatch.
+    """
+    cfg = session.cfg
+    if not build:
+        msg_error("Import aborted: build number unknown. Add a builds[] entry "
+                  "whose image_base matches the loaded image, or set "
+                  "build_number explicitly in tc_wow_config.json.")
+        return False
+
+    try:
+        loaded_base = cfg.image_base
+    except Exception:
+        return True  # no IDB (unit test / console) — nothing to verify against
+
+    debug_path = os.path.join(dumps_dir, f"wow_debug_{build}.json")
+    if not os.path.isfile(debug_path):
+        msg_warn(f"  build guard: {os.path.basename(debug_path)} not found — "
+                 f"cannot verify that the dumps match the loaded image")
+        return True
+
+    try:
+        with open(debug_path, "r", encoding="utf-8") as handle:
+            header = (json.load(handle) or {}).get("pe_header") or {}
+        dump_base = header.get("image_base")
+        if isinstance(dump_base, str):
+            dump_base = int(dump_base, 16)
+    except Exception as exc:
+        msg_warn(f"  build guard: could not read {debug_path}: {exc}")
+        return True
+
+    if not dump_base:
+        return True
+
+    if dump_base != loaded_base:
+        msg_error(
+            f"Import ABORTED: {os.path.basename(debug_path)} describes an image "
+            f"based at 0x{dump_base:X}, but the loaded IDB is based at "
+            f"0x{loaded_base:X}. These are different binaries; importing would "
+            f"rebase every RVA onto the wrong image. Re-run AutoDump for this "
+            f"build, or fix builds[]/build_number.")
+        try:
+            session.db.record_failure(build, "import_guard", "image_base_mismatch",
+                                      error_type="BuildMismatch",
+                                      error_msg=f"dump 0x{dump_base:X} != "
+                                                f"image 0x{loaded_base:X}")
+            session.db.commit()
+        except Exception:
+            pass
+        return False
+
+    msg_info(f"  build guard OK: dumps and image agree at 0x{loaded_base:X}")
+    return True
+
+
+def _record_import_outcome(db, build, filename, count, note):
+    """Durably record what each AutoDump input contributed.
+
+    Without this, `run_import` produced only a log line: "empty" and "absent"
+    both ended up as a missing dict entry, and neither reached the failure
+    ledger the Extraction Monitor reads.
+    """
+    if db is None:
+        return
+    stem = filename.rsplit(".", 1)[0]
+    try:
+        if count is None:
+            db.record_failure(build or 0, "import_missing", stem,
+                              error_type="MissingInput", error_msg=note or "")
+        elif count == 0:
+            db.record_failure(build or 0, "import_empty", stem,
+                              error_type="EmptyInput", error_msg=note or "")
+        elif count < 0:
+            db.record_failure(build or 0, "import_failed", stem,
+                              error_type="ImportError", error_msg=note or "")
+        else:
+            db.record_yield(build or 0, f"import:{stem}", count, status="OK")
+        db.commit()
+    except Exception:
+        pass  # bookkeeping must never break an import
 
 
 def run_import(session, dumps_dir=None):
@@ -101,6 +194,9 @@ def run_import(session, dumps_dir=None):
                          f"newest source mtime {time.ctime(latest_src_mtime)} — SKIPPING re-import")
                 return last.get("results", {})
 
+    if not _verify_build_matches_image(session, dumps_dir, build):
+        return {}
+
     msg_info(f"Importing from {dumps_dir} (build {build})")
     start = time.time()
 
@@ -142,6 +238,18 @@ def run_import(session, dumps_dir=None):
     available = [(f, fn) for f, fn in importers
                  if os.path.isfile(os.path.join(dumps_dir, f))]
 
+    # A missing input used to be skipped in total silence, and an input that
+    # existed but was empty was indistinguishable from one that imported 0 rows
+    # legitimately. On build 69382 that hid four degenerate AutoDump outputs
+    # (opcode_dispatch 111 B, db2_metadata 2.7 KB, updatefields 273 B,
+    # lua_bytecode 95 B) behind a clean-looking run.
+    missing = [f for f, _fn in importers
+               if not os.path.isfile(os.path.join(dumps_dir, f))]
+    for filename in missing:
+        msg_warn(f"  MISSING AutoDump input: {filename}")
+        _record_import_outcome(db, build, filename, None,
+                               "file not present in " + dumps_dir)
+
     results = {}
     for idx, (filename, importer_func) in enumerate(available):
         filepath = os.path.join(dumps_dir, filename)
@@ -152,10 +260,20 @@ def run_import(session, dumps_dir=None):
         try:
             count = importer_func(session, filepath)
             results[filename] = count
-            msg_info(f"    -> {count} records")
+            size = os.path.getsize(filepath)
+            if count == 0:
+                msg_warn(f"    -> 0 records from {filename} "
+                         f"({size} bytes on disk) — degenerate AutoDump output?")
+                _record_import_outcome(db, build, filename, 0,
+                                       f"imported 0 records from a {size}-byte file")
+            else:
+                msg_info(f"    -> {count} records")
+                _record_import_outcome(db, build, filename, count, None)
         except Exception as e:
             msg_error(f"    -> FAILED: {e}")
             results[filename] = -1
+            _record_import_outcome(db, build, filename, -1,
+                                   f"{type(e).__name__}: {e}")
 
     db.commit()
     elapsed = time.time() - start
@@ -357,18 +475,23 @@ def _import_opcodes(session, filepath):
             jam_name = h.get("jam_name", "")
             direction = h.get("direction", "")
 
-            # Infer direction from JAM name patterns when not specified
+            # Infer direction from JAM name patterns when not specified.
+            # The old code defaulted the UNKNOWN case to "CMSG"; since the
+            # opcodes PK is (direction, internal_index) and the write is an
+            # upsert, a guessed CMSG row was later overwritten by (or silently
+            # overwrote) a genuine CMSG entry with the same index. Guessed rows
+            # are now marked so they can be told apart and re-derived.
+            guessed = False
             if not direction or direction == "unknown":
-                if jam_name:
-                    jn = jam_name.lower()
-                    if "client" in jn or jn.startswith("cmsg") or "request" in jn:
-                        direction = "CMSG"
-                    elif "server" in jn or jn.startswith("smsg") or "response" in jn or "notify" in jn:
-                        direction = "SMSG"
-                    else:
-                        direction = "CMSG"  # default: most dispatch tables are client→server
+                jn = (jam_name or "").lower()
+                if "client" in jn or jn.startswith("cmsg") or "request" in jn:
+                    direction = "CMSG"
+                elif ("server" in jn or jn.startswith("smsg")
+                      or "response" in jn or "notify" in jn):
+                    direction = "SMSG"
                 else:
                     direction = "CMSG"
+                    guessed = True
 
             # Internal index: opcode value from dispatch table
             db.upsert_opcode(
@@ -376,7 +499,7 @@ def _import_opcodes(session, filepath):
                 internal_index=opcode,
                 handler_ea=handler_ea,
                 jam_type=jam_name if jam_name else None,
-                status="imported",
+                status="imported_guessed_dir" if guessed else "imported",
             )
             count += 1
 
@@ -753,6 +876,7 @@ def _import_strings(session, filepath):
 
     # Track unique strings by string_rva to count xrefs
     string_xref_counts = {}
+    string_values = {}
 
     for s in xrefs:
         # Enhanced format: {string, string_rva, code_rva}
@@ -764,8 +888,17 @@ def _import_strings(session, filepath):
 
         value = s.get("string", s.get("value", ""))
 
-        # Count xrefs per unique string address
-        string_xref_counts[string_rva] = string_xref_counts.get(string_rva, 0) + 1
+        # Count xrefs per unique string address AND remember the value in the
+        # same pass. The value used to be recovered afterwards by re-scanning
+        # the whole xref list for every unique address — O(n*m), which on the
+        # 40 MB / 179k-entry 69382 dump is ~10^10 iterations and never finishes.
+        if string_rva in string_xref_counts:
+            string_xref_counts[string_rva] += 1
+            if value and not string_values.get(string_rva):
+                string_values[string_rva] = value
+        else:
+            string_xref_counts[string_rva] = 1
+            string_values[string_rva] = value
 
         # Also store the code→string cross-reference in annotations
         code_rva = s.get("code_rva")
@@ -788,13 +921,7 @@ def _import_strings(session, filepath):
     # Now insert/update the deduplicated string entries
     for str_rva, xref_count in string_xref_counts.items():
         ea = cfg.rva_to_ea(str_rva)
-        # Get the string value (from last occurrence)
-        value_for_ea = ""
-        for s in xrefs:
-            sr = s.get("string_rva", s.get("rva"))
-            if sr and (int(sr, 16) if isinstance(sr, str) else sr) == str_rva:
-                value_for_ea = s.get("string", s.get("value", ""))
-                break
+        value_for_ea = string_values.get(str_rva, "")
 
         system = _classify_string(value_for_ea)
         db.execute(
@@ -1447,12 +1574,30 @@ _SYSTEM_PREFIXES = {
 }
 
 
+# Splits on non-alphanumerics AND on camelCase boundaries, so that
+# "HousingPlotDecor" yields {housing, plot, decor} and "SpellCast" yields
+# {spell, cast}, while "chattel" and "shadow" stay single tokens.
+_TOKEN_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+
+
 def _classify_string(value):
-    """Classify a string by content to a game system."""
+    """Classify a string by content to a game system.
+
+    Matches on WORD boundaries. Plain substring matching tagged "shadow" as
+    the `sha` system, "chattel" as `chat` and "tradeskill-frame" as `trade`,
+    which quietly polluted `strings.system` — the tag several analyzers use to
+    scope their work.
+    """
     if not value or len(value) < 3:
         return None
-    val_lower = value.lower()
+    tokens = {t.lower() for t in _TOKEN_RE.findall(value)}
+    if not tokens:
+        return None
     for system, keywords in _SYSTEM_PREFIXES.items():
-        if any(kw in val_lower for kw in keywords):
-            return system
+        for kw in keywords:
+            if kw in tokens:
+                return system
+            # multi-word keywords still need a substring test
+            if " " in kw and kw in value.lower():
+                return system
     return None

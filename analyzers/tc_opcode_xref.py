@@ -21,7 +21,7 @@ import os
 import re
 import time
 
-from tc_wow_analyzer.core.utils import msg_info, msg_warn
+from tc_wow_analyzer.core.utils import msg_info, msg_warn, current_build, dumps_dir
 
 _OPCODE_RE = re.compile(
     r"^\s*(CMSG|SMSG)_([A-Z][A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|UNKNOWN_OPCODE)",
@@ -71,7 +71,13 @@ def _parse_branch(path):
 def analyze_tc_opcode_xref(session):
     t0 = time.time()
     db = session.db
-    build = getattr(session, "build_number", None) or "67186"
+    # PluginSession has no `build_number` attribute (only cfg/db/hooks),
+    # so this getattr ALWAYS fell through to the literal "67186" — pinning
+    # the analyzer to 12.0.5 dumps no matter which build was open.
+    build = current_build() or getattr(session.cfg, "build_number", 0)
+    if not build:
+        msg_warn("  build number unknown — refusing to guess an AutoDump build")
+        return 0
 
     branch_data = {}
     for name, path in _TC_BRANCH_CANDIDATES:
@@ -114,7 +120,7 @@ def analyze_tc_opcode_xref(session):
         "by_topic": topic_opcodes,
         "union": union,
     }
-    out_path = f"c:/dumps/tc_opcodes_{build}.json"
+    out_path = os.path.join(dumps_dir(), f"tc_opcodes_{build}.json")
     with open(out_path, "w") as f:
         json.dump(payload, f, indent=2)
     msg_info(f"TC opcode xref: wrote {out_path}")
@@ -141,7 +147,8 @@ def analyze_tc_opcode_xref(session):
                             first = bn; break
                 lines.append(f"| `{op}` | `{m['value']}` | {first} |")
             lines.append("")
-        with open(f"c:/dumps/TC_{topic.upper()}_OPCODES.md", "w", encoding="utf-8") as f:
+        md_path = os.path.join(dumps_dir(), f"TC_{topic.upper()}_OPCODES.md")
+        with open(md_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
     # Cross-ref with binary opcodes (try to match by tc_name)

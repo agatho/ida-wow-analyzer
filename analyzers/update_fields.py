@@ -74,18 +74,34 @@ def analyze_update_fields(session):
                  f"(from JSON import)")
         return existing
 
+    # Each source is tried until one actually YIELDS something. The old code
+    # returned as soon as a file EXISTED, so build 69382's 273-byte
+    # wow_updatefields_69382.json short-circuited both the object-layout import
+    # and the .rdata descriptor scan — and reported success with 0 fields.
     ext_dir = cfg.extraction_dir
     if ext_dir:
-        for filename in [f"wow_updatefields_{cfg.build_number}.json", "wow_updatefields.json"]:
+        for filename in [f"wow_updatefields_{cfg.build_number}.json",
+                         "wow_updatefields.json"]:
             filepath = os.path.join(ext_dir, filename)
             if os.path.isfile(filepath):
-                return _import_update_fields_json(session, filepath)
-        for filename in [f"wow_object_layouts_{cfg.build_number}.json", "wow_object_layouts.json"]:
-            filepath = os.path.join(ext_dir, filename)
-            if os.path.isfile(filepath):
-                return _import_object_layouts_json(session, filepath)
+                count = _import_update_fields_json(session, filepath)
+                if count:
+                    return count
+                msg_warn(f"  {filename} yielded 0 update fields "
+                         f"({os.path.getsize(filepath)} bytes) — trying the "
+                         f"next source")
 
-    msg_warn("No update field data found — configure extraction_dir in settings")
+        for filename in [f"wow_object_layouts_{cfg.build_number}.json",
+                         "wow_object_layouts.json"]:
+            filepath = os.path.join(ext_dir, filename)
+            if os.path.isfile(filepath):
+                count = _import_object_layouts_json(session, filepath)
+                if count:
+                    return count
+                msg_warn(f"  {filename} yielded 0 update fields — falling "
+                         f"back to the .rdata descriptor scan")
+
+    msg_warn("No usable update field data — scanning .rdata for descriptor tables")
     return _scan_for_descriptor_tables(session)
 
 
