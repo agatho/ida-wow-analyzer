@@ -23,6 +23,7 @@ import re
 import time
 
 from tc_wow_analyzer.core.utils import msg, msg_info, msg_warn, msg_error
+from tc_wow_analyzer.core import kv_keys
 
 
 def _verify_build_matches_image(session, dumps_dir, build):
@@ -201,7 +202,11 @@ def run_import(session, dumps_dir=None):
     start = time.time()
 
     importers = [
-        # Core importers (standard autodump output)
+        # Core importers (standard autodump output).
+        # wow_offsets goes FIRST: it is the primary name source and the only
+        # one that distinguishes code from data, so later importers upsert on
+        # top of correctly classified rows instead of the other way round.
+        (f"wow_offsets_{build}.json", _import_offsets),
         (f"wow_functions_{build}.json", _import_functions),
         (f"wow_opcode_dispatch_{build}.json", _import_opcodes),
         (f"wow_jam_messages_{build}.json", _import_jam_types),
@@ -226,6 +231,17 @@ def run_import(session, dumps_dir=None):
         (f"wow_hotfix_tables_{build}.json", _import_hotfix_tables),
         (f"wow_pdata_{build}.json", _import_pdata),
         (f"wow_crypto_{build}.json", _import_crypto),
+        # Sources that shipped with AutoDump but had no importer until now.
+        # On 69382 these carry real content while several of the classic
+        # inputs above are degenerate (opcode_dispatch 0 handlers,
+        # db2_metadata 2.7 KB, updatefields 273 B).
+        (f"wow_raw_opcode_table_{build}.json", _import_raw_opcode_table),
+        (f"wow_spell_effects_{build}.json", _import_spell_effects),
+        (f"wow_string_enums_{build}.json", _import_string_enums),
+        (f"wow_switch_enums_{build}.json", _import_switch_enums),
+        (f"wow_cvars_{build}.json", _import_cvars),
+        (f"wow_event_registrations_{build}.json", _import_event_registrations),
+        (f"wow_lua_metatables_{build}.json", _import_lua_metatables),
     ]
 
     # Activity tracking for progress display
@@ -415,6 +431,20 @@ def _import_functions(session, filepath):
     functions = data.get("functions", [])
     count = 0
 
+    # wow_functions flattens every offset to source="offset" and loses the
+    # category, so on its own it writes DATA addresses (global_pointer /
+    # static_data — 2,185 of them on build 69382) into the FUNCTIONS table.
+    # _import_offsets runs first and records those as `global` annotations;
+    # skip anything it already classified as data.
+    data_eas = set()
+    try:
+        for row in db.fetchall(
+                "SELECT ea FROM annotations WHERE ann_type = 'global'"):
+            data_eas.add(row["ea"])
+    except Exception:
+        pass
+    skipped_data = 0
+
     for func in functions:
         rva = func.get("rva")
         if not rva:
@@ -423,6 +453,9 @@ def _import_functions(session, filepath):
             rva = int(rva, 16)
 
         ea = cfg.rva_to_ea(rva)
+        if ea in data_eas:
+            skipped_data += 1
+            continue
         name = func.get("name")
         source = func.get("source", "")
 
@@ -444,6 +477,9 @@ def _import_functions(session, filepath):
             db.commit()
 
     db.commit()
+    if skipped_data:
+        msg_info(f"    skipped {skipped_data} data addresses "
+                 f"(classified as globals by wow_offsets)")
     return count
 
 
@@ -520,7 +556,28 @@ def _import_jam_types(session, filepath):
 
     count = 0
 
-    for category in ("client_messages", "server_messages", "shared_structures"):
+    # AutoDump emits cmsg_messages / smsg_messages / both_messages /
+    # unk_messages. The importer used to read client_messages /
+    # server_messages / shared_structures — names that appear NOWHERE in the
+    # file. Result: 0 of 482 JAM types imported on build 69382, with no error,
+    # which starved wire_format_recovery, packet codegen and every consumer of
+    # `jam_types`. The legacy names are kept so older dumps still import.
+    categories = (
+        ("cmsg_messages", "CMSG"),
+        ("smsg_messages", "SMSG"),
+        ("both_messages", None),
+        ("unk_messages", None),
+        ("client_messages", "CMSG"),      # legacy AutoDump layout
+        ("server_messages", "SMSG"),      # legacy
+        ("shared_structures", None),      # legacy
+    )
+    seen_categories = [c for c, _d in categories if data.get(c)]
+    if not seen_categories:
+        msg_warn(f"    jam: none of the known message categories present "
+                 f"(file has: {sorted(data.keys())})")
+        return 0
+
+    for category, _direction in categories:
         messages = data.get(category, [])
         for m in messages:
             name = m.get("name", "")
@@ -549,7 +606,23 @@ def _import_jam_types(session, filepath):
             )
             count += 1
 
+            # The message list also carries the direction and the handler, which
+            # is the only opcode-ish information build 69382 provides at all
+            # (wow_opcode_dispatch is empty). Record it so opcode_dispatcher and
+            # handler_jam_linking have something to work with.
+            direction = (m.get("direction") or "").upper()
+            if direction in ("CMSG", "SMSG") and deserializer_ea:
+                db.execute(
+                    """INSERT OR IGNORE INTO annotations
+                       (ea, ann_type, value, source, confidence, created_at)
+                       VALUES (?, 'jam_handler', ?, 'autodump', ?, ?)""",
+                    (deserializer_ea, f"{direction}:{name}",
+                     {"high": 95, "med": 75, "low": 50}.get(
+                         (m.get("confidence") or "").lower(), 60),
+                     time.time()))
+
     db.commit()
+    msg_info(f"    jam categories used: {', '.join(seen_categories)}")
     return count
 
 
@@ -796,29 +869,58 @@ def _import_rtti(session, filepath):
 
     classes = data if isinstance(data, list) else data.get("classes", [])
     count = 0
+    named_only = 0
+    now = time.time()
+
+    def _hex(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                return int(value, 16)
+            except ValueError:
+                return None
+        return value
 
     for cls in classes:
         name = cls.get("name", cls.get("class_name", ""))
-        vtable_rva = cls.get("vtable_rva", cls.get("vftable_rva"))
-        if not vtable_rva:
+        if not name:
             continue
-        if isinstance(vtable_rva, str):
-            vtable_rva = int(vtable_rva, 16)
-
-        vtable_ea = cfg.rva_to_ea(vtable_rva)
+        vtable_rva = _hex(cls.get("vtable_rva", cls.get("vftable_rva")))
         parent = cls.get("parent", cls.get("base_class"))
 
-        db.upsert_vtable(
-            ea=vtable_ea,
-            rva=vtable_rva,
-            class_name=name,
-            source="rtti",
-            parent_class=parent,
-        )
-        count += 1
+        if vtable_rva:
+            db.upsert_vtable(
+                ea=cfg.rva_to_ea(vtable_rva),
+                rva=vtable_rva,
+                class_name=name,
+                source="rtti",
+                parent_class=parent,
+            )
+            count += 1
+            continue
+
+        # No vtable resolved. On build 69382 that is 1,046 of 1,052 classes,
+        # and the old code dropped every one of them — discarding a thousand
+        # real C++ class names because a different field was missing. The type
+        # descriptor address is enough to record the name against.
+        type_desc_rva = _hex(cls.get("type_desc_rva"))
+        col_rva = _hex(cls.get("col_rva"))
+        anchor = type_desc_rva or col_rva
+        if not anchor:
+            continue
+        db.execute(
+            """INSERT OR IGNORE INTO annotations
+               (ea, ann_type, value, source, confidence, created_at)
+               VALUES (?, 'rtti_class', ?, 'autodump', 85, ?)""",
+            (cfg.rva_to_ea(anchor), name[:200], now))
+        named_only += 1
 
     db.commit()
-    return count
+    if named_only:
+        msg_info(f"    rtti: {count} with vtable, {named_only} name-only "
+                 f"(no vtable resolved by AutoDump)")
+    return count + named_only
 
 
 def _import_hierarchy(session, filepath):
@@ -1450,6 +1552,458 @@ def _import_pdata(session, filepath):
 
         if count % 10000 == 0:
             db.commit()
+
+    db.commit()
+    return count
+
+
+def _import_offsets(session, filepath):
+    """Import wow_offsets JSON — the AutoDump's primary NAME source.
+
+    WHY THIS EXISTS: this file (5.3 MB / 19,700 entries on build 69382) had no
+    importer at all. `wow_functions_<build>.json` carries almost the same NAMES
+    (only 16 differ), but it flattens everything to `source: "offset"` and drops
+    the CATEGORY — which is the part that matters:
+
+        lua_function   14,911   Lua-visible functions
+        c_binding       2,604   Lua -> C bindings
+        global_pointer  2,134   DATA addresses, not functions
+        static_data        51   DATA addresses, not functions
+
+    Because the category was lost, `_import_functions` wrote all 2,185
+    global_pointer/static_data entries into the `functions` table as if they
+    were code. They are now recorded as data annotations instead, and the two
+    Lua categories additionally populate `lua_api`.
+    """
+    db = session.db
+    cfg = session.cfg
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    # Guard: this file names its own image base. Importing it against a
+    # different one silently rebases every RVA.
+    dump_base = data.get("image_base")
+    if isinstance(dump_base, str):
+        try:
+            dump_base = int(dump_base, 16)
+        except ValueError:
+            dump_base = None
+    if dump_base:
+        try:
+            if dump_base != cfg.image_base:
+                msg_error(f"    offsets: image base 0x{dump_base:X} != loaded "
+                          f"0x{cfg.image_base:X} — refusing to import")
+                return 0
+        except Exception:
+            pass
+
+    entries = data.get("all_offsets") or []
+    if not entries:
+        return 0
+
+    now = time.time()
+    counts = {"lua_function": 0, "c_binding": 0, "global_pointer": 0,
+              "static_data": 0, "other": 0}
+    count = 0
+
+    for entry in entries:
+        name = entry.get("name")
+        rva = entry.get("rva")
+        if not name or rva is None:
+            continue
+        if isinstance(rva, str):
+            try:
+                rva = int(rva, 16)
+            except ValueError:
+                continue
+        ea = cfg.rva_to_ea(rva)
+        category = entry.get("category") or "other"
+        source = entry.get("source") or "offsets"
+
+        if category in ("global_pointer", "static_data"):
+            # DATA, not code. Recorded as an annotation so it is still
+            # searchable without polluting the function inventory.
+            db.execute(
+                """INSERT OR IGNORE INTO annotations
+                   (ea, ann_type, value, source, confidence, created_at)
+                   VALUES (?, ?, ?, ?, 90, ?)""",
+                (ea, "global", name[:200], f"offsets:{source}", now))
+        else:
+            db.upsert_function(ea, rva=rva, name=name,
+                               system="lua" if category == "lua_function" else None,
+                               subsystem=category, confidence=90)
+            if category in ("lua_function", "c_binding"):
+                db.upsert_lua_api(
+                    namespace="C" if category == "c_binding" else "",
+                    method=name,
+                    handler_ea=ea,
+                )
+
+        counts[category if category in counts else "other"] += 1
+        count += 1
+        if count % 5000 == 0:
+            db.commit()
+
+    db.commit()
+    msg_info("    offsets by category: " +
+             ", ".join(f"{k}={v}" for k, v in counts.items() if v))
+    return count
+
+
+def _import_spell_effects(session, filepath):
+    """Import wow_spell_effects JSON — 512 named spell-effect handlers.
+
+    Previously unconsumed. Each entry is a real function name for an RVA, which
+    is exactly what the sparse 69382 dumps are short of.
+    """
+    db = session.db
+    cfg = session.cfg
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    count = 0
+    now = time.time()
+    for effect in data.get("effects", []):
+        rva = effect.get("handler_rva")
+        name = effect.get("name")
+        if rva is None or not name:
+            continue
+        if isinstance(rva, str):
+            try:
+                rva = int(rva, 16)
+            except ValueError:
+                continue
+        if not rva:
+            continue
+        ea = cfg.rva_to_ea(rva)
+        try:
+            confidence = int(float(effect.get("confidence", 0.7)) * 100)
+        except (TypeError, ValueError):
+            confidence = 70
+        db.upsert_function(ea, rva=rva, name=f"SpellEffect_{name}",
+                           system="spell", subsystem="spell_effect",
+                           confidence=max(0, min(100, confidence)))
+        db.execute(
+            """INSERT OR IGNORE INTO annotations
+               (ea, ann_type, value, source, confidence, created_at)
+               VALUES (?, 'spell_effect', ?, 'autodump', ?, ?)""",
+            (ea, f"{effect.get('id', '?')}: {name}", confidence, now))
+        count += 1
+
+    db.commit()
+    return count
+
+
+def _import_string_enums(session, filepath):
+    """Import wow_string_enums JSON — 466 enums / 5,210 values on 69382.
+
+    Previously unconsumed, and 3.6x larger than `wow_enums` (128 enums) which
+    WAS imported. Merged into the same kv blob so enum_recovery and the
+    conformance views see one combined set.
+    """
+    return _merge_enum_blob(session, filepath, value_key="label")
+
+
+def _import_switch_enums(session, filepath):
+    """Import wow_switch_enums JSON — enums recovered from switch statements."""
+    db = session.db
+    cfg = session.cfg
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    enums = data.get("enums", [])
+    if not enums:
+        return 0
+
+    existing = db.kv_get(kv_keys.RECOVERED_ENUMS) or []
+    if not isinstance(existing, list):
+        existing = []
+    known = {e.get("name") for e in existing if isinstance(e, dict)}
+
+    count = 0
+    for enum in enums:
+        func_rva = enum.get("func_rva")
+        if isinstance(func_rva, str):
+            try:
+                func_rva = int(func_rva, 16)
+            except ValueError:
+                func_rva = None
+        name = f"SwitchEnum_{func_rva:X}" if func_rva else enum.get("name")
+        if not name or name in known:
+            continue
+        values = []
+        for case in enum.get("cases", []):
+            if isinstance(case, dict):
+                values.append({
+                    "value": case.get("value", case.get("case")),
+                    "name": case.get("name", case.get("label")),
+                })
+        if not values:
+            continue
+        existing.append({
+            "name": name,
+            "value_count": len(values),
+            "values": values,
+            "source": "switch_enums",
+            "func_ea": cfg.rva_to_ea(func_rva) if func_rva else None,
+        })
+        known.add(name)
+        count += 1
+
+    db.kv_set(kv_keys.RECOVERED_ENUMS, existing)
+    db.commit()
+    return count
+
+
+def _merge_enum_blob(session, filepath, value_key="name"):
+    """Shared body for the enum-shaped AutoDump files."""
+    db = session.db
+    cfg = session.cfg
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    enums = data.get("enums", [])
+    if not enums:
+        return 0
+
+    existing = db.kv_get(kv_keys.RECOVERED_ENUMS) or []
+    if not isinstance(existing, list):
+        existing = []
+    known = {e.get("name") for e in existing if isinstance(e, dict)}
+
+    count = 0
+    for enum in enums:
+        name = enum.get("name")
+        if not name or name in known:
+            continue
+        values = []
+        for val in enum.get("values", []):
+            if not isinstance(val, dict):
+                continue
+            values.append({
+                "value": val.get("index", val.get("value")),
+                "name": val.get(value_key) or val.get("name"),
+                "confidence": val.get("confidence"),
+            })
+        if not values:
+            continue
+        table_rva = enum.get("table_rva")
+        if isinstance(table_rva, str):
+            try:
+                table_rva = int(table_rva, 16)
+            except ValueError:
+                table_rva = None
+        existing.append({
+            "name": name,
+            "value_count": len(values),
+            "values": values,
+            "source": data.get("type", "autodump"),
+            "table_ea": cfg.rva_to_ea(table_rva) if table_rva else None,
+        })
+        known.add(name)
+        count += 1
+
+    db.kv_set(kv_keys.RECOVERED_ENUMS, existing)
+    db.commit()
+    return count
+
+
+def _import_cvars(session, filepath):
+    """Import wow_cvars JSON — 402 console variables with help text.
+
+    Previously unconsumed. `cvar_extraction` mines these out of the binary the
+    hard way; having the AutoDump list gives it something to verify against.
+    """
+    db = session.db
+    cfg = session.cfg
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    cvars = data.get("cvars", [])
+    if not cvars:
+        return 0
+
+    reg_rva = data.get("registration_fn_rva")
+    if isinstance(reg_rva, str):
+        try:
+            reg_rva = int(reg_rva, 16)
+        except ValueError:
+            reg_rva = None
+
+    db.kv_set("autodump_cvars", {
+        "build": data.get("build"),
+        "registration_fn_ea": cfg.rva_to_ea(reg_rva) if reg_rva else None,
+        "count": len(cvars),
+        "cvars": cvars,
+    })
+
+    if reg_rva:
+        db.upsert_function(cfg.rva_to_ea(reg_rva), rva=reg_rva,
+                           name="CVar_RegisterAll", system="cvar",
+                           confidence=85)
+    db.commit()
+    return len(cvars)
+
+
+def _import_event_registrations(session, filepath):
+    """Import wow_event_registrations JSON — 4,730 event -> handler links.
+
+    Previously unconsumed, although `event_system_recovery` exists to recover
+    exactly this topology from the binary.
+    """
+    db = session.db
+    cfg = session.cfg
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    regs = data.get("registrations", [])
+    if not regs:
+        return 0
+
+    now = time.time()
+    count = 0
+    by_event = {}
+    for reg in regs:
+        event = reg.get("event")
+        handler_rva = reg.get("handler_rva")
+        if isinstance(handler_rva, str):
+            try:
+                handler_rva = int(handler_rva, 16)
+            except ValueError:
+                handler_rva = None
+        if not event:
+            continue
+        entry = {"event": event}
+        if handler_rva:
+            handler_ea = cfg.rva_to_ea(handler_rva)
+            entry["handler_ea"] = handler_ea
+            db.execute(
+                """INSERT OR IGNORE INTO annotations
+                   (ea, ann_type, value, source, confidence, created_at)
+                   VALUES (?, 'event_handler', ?, 'autodump', 90, ?)""",
+                (handler_ea, str(event)[:200], now))
+        call_rva = reg.get("call_site_rva")
+        if isinstance(call_rva, str):
+            try:
+                entry["call_site_ea"] = cfg.rva_to_ea(int(call_rva, 16))
+            except ValueError:
+                pass
+        by_event.setdefault(event, []).append(entry)
+        count += 1
+        if count % 2000 == 0:
+            db.commit()
+
+    db.kv_set("autodump_event_registrations", {
+        "build": data.get("build"),
+        "total": count,
+        "events": len(by_event),
+        "by_event": by_event,
+    })
+    db.commit()
+    return count
+
+
+def _import_raw_opcode_table(session, filepath):
+    """Import wow_raw_opcode_table JSON — raw dispatch tables.
+
+    On 69382 `wow_opcode_dispatch` is empty (0 handlers, 111 bytes) while this
+    file still carries 12 tables. It is not a full substitute, but it is the
+    only opcode structure the dump provides, and it gives `opcode_dispatcher`
+    a dispatch range instead of nothing.
+    """
+    db = session.db
+    cfg = session.cfg
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    tables = data.get("tables", [])
+    if not tables:
+        return 0
+
+    normalised = []
+    best = None
+    for table in tables:
+        table_rva = table.get("table_rva")
+        if isinstance(table_rva, str):
+            try:
+                table_rva = int(table_rva, 16)
+            except ValueError:
+                table_rva = None
+        entry = {
+            "table_ea": cfg.rva_to_ea(table_rva) if table_rva else None,
+            "table_rva": table_rva,
+            "entry_count": table.get("entry_count", 0),
+            "stride": table.get("stride"),
+            "dispatch_encoding": table.get("dispatch_encoding"),
+            "entries": table.get("entries", []),
+        }
+        normalised.append(entry)
+        if best is None or entry["entry_count"] > best["entry_count"]:
+            best = entry
+
+    db.kv_set("autodump_raw_opcode_tables", {
+        "build": data.get("build"),
+        "table_count": len(normalised),
+        "total_entries": data.get("total_entries", 0),
+        "tables": normalised,
+    })
+
+    # Seed the dispatch range for this build only if nothing better is known.
+    if best and best["entry_count"] and not cfg.dispatch_range.get("count"):
+        cfg.set_build_scoped("dispatch_range", {
+            "start": 0,
+            "end": best["entry_count"] - 1,
+            "count": best["entry_count"],
+            "source": "raw_opcode_table",
+        })
+        known = dict(cfg.known_rvas or {})
+        if best["table_rva"] and not known.get("main_dispatcher"):
+            known["main_dispatcher"] = best["table_rva"]
+            cfg.set_build_scoped("known_rvas", known)
+        cfg.save()
+        msg_info(f"    seeded dispatch range from raw table: "
+                 f"{best['entry_count']} entries")
+
+    db.commit()
+    return sum(t["entry_count"] for t in normalised)
+
+
+def _import_lua_metatables(session, filepath):
+    """Import wow_lua_metatables JSON — Lua type metatables and their methods."""
+    db = session.db
+    cfg = session.cfg
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    count = 0
+    for typ in data.get("types", []):
+        type_name = typ.get("type_name") or ""
+        if not type_name:
+            continue
+        for method in typ.get("methods", []):
+            if isinstance(method, dict):
+                method_name = method.get("name")
+                rva = method.get("rva")
+            else:
+                method_name, rva = method, None
+            if not method_name:
+                continue
+            if isinstance(rva, str):
+                try:
+                    rva = int(rva, 16)
+                except ValueError:
+                    rva = None
+            db.upsert_lua_api(namespace=type_name, method=method_name,
+                              handler_ea=cfg.rva_to_ea(rva) if rva else 0)
+            count += 1
 
     db.commit()
     return count
