@@ -36,10 +36,13 @@ agreed with zero contradictions:
           against catalog opcode names (see core/jam_family.py).
   "interp" not observed itself, but both neighbours are proven with the same
           shift and the shift is monotone non-decreasing, so it is forced.
-  "ghidra" a second, independent decompiler (Ghidra 12.0.2 headless) found the
-          family's receive dispatcher where our IDA pass had not looked, and IDA
-          then confirmed it case for case. Across all 22 dispatchers the two
-          decompilers agree on 1646 of 1646 switch case values, 0 discrepancies.
+  "ghidra" a second, independent decompiler (Ghidra 12.0.2 headless) resolved
+          the family's receive dispatcher, and IDA agrees case for case. Across
+          the 22 dispatchers both tools examined, they agree on 1646 of 1646
+          switch case values, 0 discrepancies. (A 23rd family, client 0x55, was
+          found afterwards by a full base-0 switch sweep and is NOT covered by
+          that comparison -- it rests on IDA plus a clean 12-name block from the
+          catalog.)
 
 Two families stay deliberately unmapped: 0x2E (+1 or +2) and 0x35 (+2 or +3) are
 never seen on the wire and carry no JAM type names. Six housing CMSGs are
@@ -84,6 +87,15 @@ SHIFT_12_1 = {
     # public catalog names. Its own JAM type names say what it is:
     # JamClientAIBrainActivity, JamClientAIStrategyObjective,
     # TargetGraphDebugNode, DebugSpellCooldownData. The AI/debug channel.
+    #
+    # 0x51 (already wire-proven) gained its dispatcher the same way, at client
+    # 0x55: catalog indices 0x0..0xB land on client 0x0..0xB as an unbroken
+    # SMSG_HOUSING_DECOR_* block, with one message appended in 12.1 at 0xC.
+    # None of these five families was new to IDA. All five had been found and
+    # then dropped, because the JAM-typename gate could not decide their catalog
+    # family and refused to guess -- which was the right call at the time. What
+    # changed is that the family map is now pinned from outside, so position and
+    # case count can carry the argument instead.
     0x5E: (5, "wire"),   0x5F: (5, "wire"),   0x60: (5, "wire"),
     0x62: (5, "wire"),   0x63: (5, "wire"),   0x65: (5, "interp"),
 }
