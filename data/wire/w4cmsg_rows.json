@@ -1,0 +1,794 @@
+[
+ {
+  "fam": "0x43",
+  "op": "0x430004",
+  "name": "CMSG_ADDON_LIST",
+  "wr": "0x6A1C70",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid u32*2 u8 u32 [bitflush bits2 bitflush u8 bits2 u8*2 FLUSH bytes*2]*"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43000B",
+  "name": "CMSG_START_SPECTATOR_WAR_GAME",
+  "wr": "0x6A2150",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid u32 u16 guid u32 u16 u64 FLUSH"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430018",
+  "name": "CMSG_WARDEN3_DATA",
+  "wr": "0x6A2940",
+  "sniff": 1189,
+  "size": "40..16280",
+  "seq": "u32*2 bytes"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430028",
+  "name": "CMSG_REQUEST_CHAT_LOGIN",
+  "wr": "0x6A3600",
+  "sniff": 0,
+  "size": "-",
+  "seq": "FLUSH"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430048",
+  "name": "CMSG_DF_READY_CHECK_RESPONSE",
+  "wr": "0x6A5240",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u8 FLUSH u8"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43007E",
+  "name": "CMSG_SILENCE_PARTY_TALKER",
+  "wr": "0x6A83E0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u8 FLUSH guid u8"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430086",
+  "name": "CMSG_ADD_BATTLENET_FRIEND",
+  "wr": "0x6A8AD0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u64 u32 guid u32 bits6*2 FLUSH bytes*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300B8",
+  "name": "CMSG_REQUEST_CHARACTER_GUILD_FOLLOW_INFO",
+  "wr": "0x6AA740",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid u32"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300BD",
+  "name": "CMSG_GM_TICKET_ACKNOWLEDGE_SURVEY",
+  "wr": "0x6AAA60",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300CF",
+  "name": "CMSG_LOW_LEVEL_RAID1",
+  "wr": "0x6AB1E0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "FLUSH"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300E5",
+  "name": "CMSG_LIVE_REGION_GET_ACCOUNT_CHARACTER_LIST",
+  "wr": "0x6AB530",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 u8 bitflush bits6 FLUSH bytes*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300E6",
+  "name": "CMSG_LIVE_REGION_CHARACTER_COPY",
+  "wr": "0x6AB7B0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 u8 u32 guid u8*3 bits6 bitflush u8*2 FLUSH bytes*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300E7",
+  "name": "CMSG_LIVE_REGION_ACCOUNT_RESTORE",
+  "wr": "0x6AB980",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 u8 guid u64 bitflush bits6 FLUSH bytes*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300E8",
+  "name": "CMSG_LIVE_REGION_KEY_BINDINGS_COPY",
+  "wr": "0x6ABBD0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 u8 u32 guid bits6 bitflush u8*2 FLUSH bytes*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300F1",
+  "name": "CMSG_SHOW_TRADE_SKILL",
+  "wr": "0x6ABE20",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid u32*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300F3",
+  "name": "CMSG_CHARACTER_UPGRADE_MANUAL_UNREVOKE_REQUEST",
+  "wr": "0x6ABF40",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300F5",
+  "name": "CMSG_CHARACTER_CHECK_UPGRADE",
+  "wr": "0x6ABFF0",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4300FC",
+  "name": "CMSG_BATTLE_PAY_ACK_FAILED_RESPONSE",
+  "wr": "0x6AC730",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430103",
+  "name": "CMSG_BATTLENET_CHALLENGE_RESPONSE",
+  "wr": "0x6ACD70",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 bits3 bits6 FLUSH bytes"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430113",
+  "name": "CMSG_ENGINE_SURVEY",
+  "wr": "0x6AE330",
+  "sniff": 2,
+  "size": "294..294",
+  "seq": "u32*6 u8*2 u32 u8 u32*4 u64 u32 u8 u32*6 u8*4 u64*2 u32 u8 u32*4 u64 u32 u16 u8*2 bits6*2 u8*21 bits6 u8*5 bits7 bits6 u8*16 bits7*3 bits4*2 u8*2 FLUSH [bytes]* bytes*10"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430120",
+  "name": "CMSG_GET_VAS_ACCOUNT_CHARACTER_LIST",
+  "wr": "0x6AEA90",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430121",
+  "name": "CMSG_GET_VAS_TRANSFER_TARGET_REALM_LIST",
+  "wr": "0x6AEAE0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430122",
+  "name": "CMSG_BATTLE_PAY_START_VAS_PURCHASE",
+  "wr": "0x6AEEF0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32*2 guid u32*2 guid*3 bits6 bits7*2 bits6 bitflush u8 bits4 u8 FLUSH [bytes]* bytes*5"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430126",
+  "name": "CMSG_CLUB_PRESENCE_SUBSCRIBE",
+  "wr": "0x6AF0E0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "FLUSH u32 [u64]*"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430127",
+  "name": "CMSG_RAF_RECRUIT_PRESENCE_SUBSCRIBE",
+  "wr": "0x6AF220",
+  "sniff": 3,
+  "size": "47..47",
+  "seq": "FLUSH u32 [guid]*"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430128",
+  "name": "CMSG_SEND_CHARACTER_CLUB_INVITATION",
+  "wr": "0x6AF4A0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u64*2 u32*2 guid u64 bitflush FLUSH bytes bitflush FLUSH bytes u32 bytes"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43012F",
+  "name": "CMSG_QUICK_JOIN_SIGNAL_TOAST_DISPLAYED",
+  "wr": "0x6AF6B0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid f32 u32 [guid]* u8 FLUSH"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430130",
+  "name": "CMSG_QUICK_JOIN_RESPOND_TO_INVITE",
+  "wr": "0x6AF830",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid*2 FLUSH"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430131",
+  "name": "CMSG_QUICK_JOIN_REQUEST_INVITE",
+  "wr": "0x6AFA80",
+  "sniff": 0,
+  "size": "-",
+  "seq": "bitflush*2 FLUSH u32 guid u64 u8 bytes*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430132",
+  "name": "CMSG_QUICK_JOIN_AUTO_ACCEPT_REQUESTS",
+  "wr": "0x6AFAD0",
+  "sniff": 34,
+  "size": "1..1",
+  "seq": "FLUSH"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430133",
+  "name": "CMSG_SET_EXCLUDED_CHAT_CENSOR_SOURCES",
+  "wr": "0x6AFB60",
+  "sniff": 20,
+  "size": "1..1",
+  "seq": "u8"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430135",
+  "name": "CMSG_BATTLE_PAY_REQUEST_PRICE_INFO",
+  "wr": "0x6AFC20",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430138",
+  "name": "CMSG_VAS_GET_QUEUE_MINUTES",
+  "wr": "0x6AFCE0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u64 u32"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430139",
+  "name": "CMSG_VAS_CHECK_TRANSFER_OK",
+  "wr": "0x6AFD40",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43013C",
+  "name": "CMSG_VOICE_CHAT_LOGIN",
+  "wr": "0x6AFDF0",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43013D",
+  "name": "CMSG_VOICE_CHANNEL_STT_TOKEN_REQUEST",
+  "wr": "0x6AFED0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "bits7 FLUSH bytes"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43013E",
+  "name": "CMSG_VOICE_CHAT_JOIN_CHANNEL",
+  "wr": "0x6AFFA0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u8"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430140",
+  "name": "CMSG_GET_CLIENT_CHECKOUT_LICENSES",
+  "wr": "0x6B0170",
+  "sniff": 0,
+  "size": "-",
+  "seq": "bits6 bits7 u8 FLUSH bytes*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430141",
+  "name": "CMSG_BATTLE_PAY_CANCEL_OPEN_CHECKOUT",
+  "wr": "0x6B02B0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "bits7 u8 FLUSH bytes"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430152",
+  "name": "CMSG_RAF_UPDATE_RECRUITMENT_INFO",
+  "wr": "0x6B1300",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430160",
+  "name": "CMSG_QUICK_JOIN_REQUEST_INVITE_WITH_CONFIRMATION",
+  "wr": "0x6B15B0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "bitflush*2 FLUSH u32 guid u32 bytes*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430163",
+  "name": "CMSG_ACCOUNT_NOTIFICATION_ACKNOWLEDGED",
+  "wr": "0x6B1680",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u64 u32*2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430167",
+  "name": "CMSG_BATTLE_PAY_DISTRIBUTION_ASSIGN_VAS",
+  "wr": "0x6B1CE0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 u64 guid u32*2 guid*3 u8*3 u32 [u32*2]* bits6 bits7*2 u8*4 FLUSH bytes*3"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43016B",
+  "name": "CMSG_LOBBY_MATCHMAKER_PARTY_INVITE",
+  "wr": "0x6B1E70",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43016C",
+  "name": "CMSG_LOBBY_MATCHMAKER_ACCEPT_PARTY_INVITE",
+  "wr": "0x6B1EC0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43016D",
+  "name": "CMSG_LOBBY_MATCHMAKER_REJECT_PARTY_INVITE",
+  "wr": "0x6B1F10",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43016E",
+  "name": "CMSG_LOBBY_MATCHMAKER_PARTY_UNINVITE",
+  "wr": "0x6B1F60",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43016F",
+  "name": "CMSG_LOBBY_MATCHMAKER_LEAVE_PARTY",
+  "wr": "0x6B1FB0",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430170",
+  "name": "CMSG_LOBBY_MATCHMAKER_SET_PARTY_PLAYLIST_ENTRY",
+  "wr": "0x6B1FE0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430171",
+  "name": "CMSG_LOBBY_MATCHMAKER_SET_PLAYER_READY",
+  "wr": "0x6B2030",
+  "sniff": 0,
+  "size": "-",
+  "seq": "FLUSH"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430172",
+  "name": "CMSG_REGISTER_FAST_LOGIN",
+  "wr": "0x6B20B0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "FLUSH u32 guid u8 u32 u8*3 u32*2 [u32*2]**2 u32 guid u8 u32 u8*3 u32*2 [u32*2]**2"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430173",
+  "name": "CMSG_LOBBY_MATCHMAKER_ENTER_QUEUE",
+  "wr": "0x6B2150",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 u8*3 u32*2 [u32*2]**2 guid"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430174",
+  "name": "CMSG_LOBBY_MATCHMAKER_QUEUE_PROPSAL_RESPONSE",
+  "wr": "0x6B21C0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "FLUSH"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430175",
+  "name": "CMSG_LOBBY_MATCHMAKER_ABANDON_QUEUE",
+  "wr": "0x6B2230",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43017B",
+  "name": "CMSG_SAVE_ACCOUNT_DATA_EXPORT",
+  "wr": "0x6B22C0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 [guid]*"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43017E",
+  "name": "CMSG_LOBBY_MATCHMAKER_CREATE_CHARACTER",
+  "wr": "0x6B23E0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u8*2 u32 [u32*2]*"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430196",
+  "name": "CMSG_REQUEST_REALM_GUILD_MASTER_INFO",
+  "wr": "0x6B2750",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32*2 [guid]*"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x430197",
+  "name": "CMSG_SERVER_VALIDATION_SIGNATURE_REQUEST",
+  "wr": "0x6B2860",
+  "sniff": 0,
+  "size": "-",
+  "seq": "bits24 FLUSH u32 guid bytes"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x43019C",
+  "name": "CMSG_REFRESH_ENTITLEMENTS_ON_ORDER_COMPLETE",
+  "wr": "0x6B2C50",
+  "sniff": 0,
+  "size": "-",
+  "seq": "bits24 FLUSH bytes"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4301A0",
+  "name": "CMSG_BLEEP_PONG",
+  "wr": "0x6B2E00",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 [u64*3 u8 FLUSH bytes]*"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4301A1",
+  "name": "CMSG_FETCH_BLEEP_PROXIES",
+  "wr": "0x6B2F50",
+  "sniff": 7,
+  "size": "0..0",
+  "seq": ""
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4301A2",
+  "name": "CMSG_REFRESH_BLEEP_TOKENS",
+  "wr": "0x6B3120",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 [bits5 bits24 bits6 FLUSH u64 bytes*3]*"
+ },
+ {
+  "fam": "0x43",
+  "op": "0x4301A3",
+  "name": "CMSG_EXPIRE_BLEEP_TOKENS",
+  "wr": "0x6B3170",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 [bits5 bits24 bits6 FLUSH u64 bytes*3]*"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D0032",
+  "name": "CMSG_USED_FOLLOW",
+  "wr": "0x6CBEA0",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D006B",
+  "name": "CMSG_SET_GAME_EVENT_DEBUG_VIEW_STATE",
+  "wr": "\u2014",
+  "sniff": 0,
+  "size": "-",
+  "seq": "(Writer nicht aufgel\u00f6st: die Immediate-Site liegt in einer UI-Funktion, nicht im Serializer)"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D009A",
+  "name": "CMSG_KIOSK_ENABLE_GOD_MODE",
+  "wr": "0x6CD330",
+  "sniff": 0,
+  "size": "-",
+  "seq": "FLUSH"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D00BA",
+  "name": "CMSG_RESET_CHALLENGE_MODE_CHEAT",
+  "wr": "0x6CD470",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D00C7",
+  "name": "CMSG_CLASS_TALENTS_NOTIFY_EMPTY_CONFIG",
+  "wr": "0x6CD620",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D0171",
+  "name": "CMSG_ADD_ACCOUNT_COSMETIC",
+  "wr": "0x6CEF70",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D01E6",
+  "name": "CMSG_UPDATE_CRAFTING_NPC_RECIPES",
+  "wr": "0x6D0550",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D0259",
+  "name": "CMSG_LFG_LOREWALKING_UPDATE_REQUEST",
+  "wr": "0x6D1520",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D025D",
+  "name": "CMSG_BONUS_ROLL",
+  "wr": "0x6D16E0",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D0263",
+  "name": "CMSG_ISLAND_QUEUE",
+  "wr": "0x6D1710",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid u32"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D0273",
+  "name": "CMSG_REPORT_SERVER_LAG",
+  "wr": "0x6D1870",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D0291",
+  "name": "CMSG_UPGRADE_RUNEFORGE_LEGENDARY",
+  "wr": "0x6D1B90",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 u8*4"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D0293",
+  "name": "CMSG_SUBSCRIPTION_INTERSTITIAL_RESPONSE",
+  "wr": "0x6D1C50",
+  "sniff": 0,
+  "size": "-",
+  "seq": "bits3 FLUSH"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D029C",
+  "name": "CMSG_ABANDON_NPE_RESPONSE",
+  "wr": "0x6D1CB0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "FLUSH"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02BA",
+  "name": "CMSG_TRAITS_TALENT_TEST_UNLEARN_SPELLS",
+  "wr": "0x6D21F0",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02C6",
+  "name": "CMSG_CLASS_TALENTS_NOTIFY_VALIDATION_FAILED",
+  "wr": "0x6D2550",
+  "sniff": 1,
+  "size": "4..4",
+  "seq": "u32"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02D3",
+  "name": "CMSG_SPECTATE_CHANGE",
+  "wr": "0x6D2650",
+  "sniff": 0,
+  "size": "-",
+  "seq": "FLUSH"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02D4",
+  "name": "CMSG_SPECTATE_SET_NEXT_TARGET",
+  "wr": "0x6D26C0",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02D5",
+  "name": "CMSG_SPECTATE_END",
+  "wr": "0x6D2710",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02D7",
+  "name": "CMSG_WORLD_LOOT_OBJECT_CLICK",
+  "wr": "0x6D2740",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u32 guid"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02DB",
+  "name": "CMSG_SEAMLESS_TRANSFER_COMPLETE",
+  "wr": "0x6D29C0",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02EB",
+  "name": "CMSG_QUEST_DRIVEN_SCENARIO_STATE_CHANGE",
+  "wr": "0x6D3160",
+  "sniff": 0,
+  "size": "-",
+  "seq": "guid u32*2"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02EF",
+  "name": "CMSG_QUERY_SELECTED_WOW_LABS_AREA",
+  "wr": "0x6D32E0",
+  "sniff": 0,
+  "size": "-",
+  "seq": ""
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02F0",
+  "name": "CMSG_QUERY_WOW_LABS_AREA_INFO",
+  "wr": "0x6D3310",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u8"
+ },
+ {
+  "fam": "0x3D",
+  "op": "0x3D02F1",
+  "name": "CMSG_SELECT_WOW_LABS_AREA",
+  "wr": "0x6D3430",
+  "sniff": 0,
+  "size": "-",
+  "seq": "u64*4 bits24*2 FLUSH bytes*2"
+ }
+]
