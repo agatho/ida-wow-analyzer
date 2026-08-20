@@ -37,9 +37,9 @@ agreed with zero contradictions:
   "interp" not observed itself, but both neighbours are proven with the same
           shift and the shift is monotone non-decreasing, so it is forced.
   "ghidra" a second, independent decompiler (Ghidra 12.0.2 headless) found the
-          family's receive dispatcher and its switch cases where our IDA pass
-          had not looked. Its 535 recovered case values across 13 shared
-          dispatchers are identical to IDA's, 0 discrepancies.
+          family's receive dispatcher where our IDA pass had not looked, and IDA
+          then confirmed it case for case. Across all 22 dispatchers the two
+          decompilers agree on 1646 of 1646 switch case values, 0 discrepancies.
 
 Two families stay deliberately unmapped: 0x2E (+1 or +2) and 0x35 (+2 or +3) are
 never seen on the wire and carry no JAM type names. Six housing CMSGs are
@@ -74,10 +74,16 @@ SHIFT_12_1 = {
     # 0x52 / 0x53 / 0x55 were interpolated until Ghidra turned up their
     # dispatchers at client 0x56 / 0x57 / 0x59 -- families our IDA sweep had
     # missed entirely. Monotonicity and injectivity pin them between the fixed
-    # points 0x55->0x51 and 0x58->0x54 (and 0x58->0x54, 0x5A->0x56), and the
-    # case counts land exactly: 8 == 8 for both 0x52 and 0x53.
-    # Client 0x4D maps to catalog 0x4A the same way -- a 12-message protocol
-    # that WowPacketParser's table does not name at all.
+    # points 0x51->0x55 and 0x54->0x58 and 0x56->0x5A, and the counts leave no
+    # slack: exactly two catalog families sit between 0x51 and 0x54, and exactly
+    # two client dispatchers sit between 0x55 and 0x58.
+    # The names that fall out are a clean block each, which is what a correct
+    # assignment looks like: client 0x56 index 0..7 is SMSG_HOUSING_FIXTURE_*
+    # end to end, client 0x57 index 0..7 is SMSG_HOUSING_ROOM_*.
+    # Client 0x4D maps to catalog 0x4A the same way -- 12 messages that no
+    # public catalog names. Its own JAM type names say what it is:
+    # JamClientAIBrainActivity, JamClientAIStrategyObjective,
+    # TargetGraphDebugNode, DebugSpellCooldownData. The AI/debug channel.
     0x5E: (5, "wire"),   0x5F: (5, "wire"),   0x60: (5, "wire"),
     0x62: (5, "wire"),   0x63: (5, "wire"),   0x65: (5, "interp"),
 }
