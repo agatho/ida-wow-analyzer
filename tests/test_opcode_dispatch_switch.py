@@ -202,6 +202,19 @@ def run():
     #     internal_index = dispatch_start + i   over  sorted(callees)
     # i.e. opcode = address rank, which fabricated every row it wrote. The file
     # must never regain an address-ordered opcode assignment.
+    # REGRESSION: the final summary used to format legacy stats keys
+    # unconditionally. On the JAM path those keys are absent, so `%d` got None
+    # and raised TypeError AFTER all rows/artifacts were written — the run was
+    # logged as "analyzer_failed" while the output was actually correct.
+    # (2026-08-20, seen in the 69382 full run.) Both stat shapes must format.
+    src = open(MOD).read()
+    ck("summary no longer formats raw stats.get() into %d",
+       'stats.get("router_attributed"), stats.get("base0_switches")' not in src)
+    ck("summary coerces missing stats to a number",
+       "def _n(key):" in src and "isinstance(v, (int, float))" in src)
+    ck("JAM path reports handler_sites for the summary",
+       'stats["handler_sites"] = len(handler_targets)' in src)
+
     import ast as _ast
     disp_path = os.path.join(HERE, "..", "analyzers", "opcode_dispatcher.py")
     disp_src = open(disp_path).read()

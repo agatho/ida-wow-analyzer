@@ -600,6 +600,7 @@ def analyze_opcode_dispatch_switch(session):
     handler_targets, jam_stats = resolve_via_jam_typenames(known_values, hb)
     stats = dict(jam_stats)
     stats["source"] = "jam_typenames"
+    stats["handler_sites"] = len(handler_targets)
     msg_info("  dispatch(switch): JAM type-name remap -> %d opcodes from %d/%d "
              "client families" % (jam_stats.get("opcodes", 0),
                                   jam_stats.get("mapped_families", 0),
@@ -707,12 +708,29 @@ def analyze_opcode_dispatch_switch(session):
     fam_summary = ", ".join(
         "0x%X:%d" % (b, v)
         for b, v in sorted(per_family.items(), key=lambda kv: -kv[1])[:6])
-    msg_info("  dispatch(switch): %d opcodes -> %d handler sites "
-             "(%d router, %d base-0, %d sniff-validated). %.1f%% of %d known. "
-             "Top families: %s"
-             % (written, stats.get("handler_sites"),
-                stats.get("router_attributed"), stats.get("base0_switches"),
-                stats.get("sniff_attributed", 0),
-                100.0 * written / len(known_values), len(known_values),
-                fam_summary))
+    # NOTE: `stats` differs by source. The JAM path returns
+    # {client_families, mapped_families, opcodes, unmapped}; the legacy base-0
+    # fallback returns {routers, router_attributed, base0_switches, ...}. A
+    # previous version formatted the legacy keys unconditionally, so on the JAM
+    # path every key was None and `%d` raised TypeError *after* all the work was
+    # done and written — the analyzer looked "failed" while its output was fine.
+    # Use int() with a default and pick the line by source.
+    def _n(key):
+        v = stats.get(key)
+        return int(v) if isinstance(v, (int, float)) else 0
+
+    pct = (100.0 * written / len(known_values)) if known_values else 0.0
+    if stats.get("source") == "jam_typenames":
+        msg_info("  dispatch(switch): %d opcodes -> %d handler sites via JAM "
+                 "type names (%d/%d client families identified). %.1f%% of %d "
+                 "known. Top families: %s"
+                 % (written, _n("handler_sites"), _n("mapped_families"),
+                    _n("client_families"), pct, len(known_values), fam_summary))
+    else:
+        msg_info("  dispatch(switch): %d opcodes -> %d handler sites "
+                 "(%d router, %d base-0, %d sniff-validated). %.1f%% of %d known. "
+                 "Top families: %s"
+                 % (written, _n("handler_sites"), _n("router_attributed"),
+                    _n("base0_switches"), _n("sniff_attributed"),
+                    pct, len(known_values), fam_summary))
     return written
