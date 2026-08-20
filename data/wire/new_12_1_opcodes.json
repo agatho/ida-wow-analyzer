@@ -1,0 +1,366 @@
+{
+ "nameable_by_tc_union": [
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0142",
+   "packets": 3485,
+   "names": [
+    "CMSG_SPELL_EMPOWER_RESTART"
+   ]
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0141",
+   "packets": 3003,
+   "names": [
+    "CMSG_SPELL_EMPOWER_RELEASE"
+   ]
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0264",
+   "packets": 108,
+   "names": [
+    "CMSG_AZERITE_ESSENCE_ACTIVATE_ESSENCE"
+   ]
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D01E5",
+   "packets": 76,
+   "names": [
+    "CMSG_CREATE_SHIPMENT"
+   ]
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D016F",
+   "packets": 44,
+   "names": [
+    "CMSG_SPAWN_TRACKING_UPDATE"
+   ]
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D017F",
+   "packets": 22,
+   "names": [
+    "CMSG_CANCEL_CAST"
+   ]
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0192",
+   "packets": 14,
+   "names": [
+    "CMSG_SET_WAR_MODE"
+   ]
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D02BC",
+   "packets": 7,
+   "names": [
+    "CMSG_PERKS_PROGRAM_REQUEST_CART_CHECKOUT"
+   ]
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D030E",
+   "packets": 1,
+   "names": [
+    "CMSG_REQUEST_TREASURE_PUNCH_LIST_ITEMS"
+   ]
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D017D",
+   "packets": 1,
+   "names": [
+    "CMSG_UPDATE_SPELL_VISUAL"
+   ]
+  }
+ ],
+ "unknown_new_12_1": [
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4502FB",
+   "packets": 8807
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D010E",
+   "packets": 3084
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0235",
+   "packets": 564
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4501D6",
+   "packets": 340
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x450373",
+   "packets": 264
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0167",
+   "packets": 224
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4501DF",
+   "packets": 202
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D011C",
+   "packets": 188
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D011D",
+   "packets": 185
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4501DE",
+   "packets": 145
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x450156",
+   "packets": 103
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E008A",
+   "packets": 85
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E0082",
+   "packets": 68
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D01A0",
+   "packets": 40
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4501BF",
+   "packets": 39
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4502D4",
+   "packets": 30
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x45024A",
+   "packets": 30
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0153",
+   "packets": 29
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x450123",
+   "packets": 24
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E00EC",
+   "packets": 21
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E0089",
+   "packets": 19
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4500EC",
+   "packets": 17
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x45029D",
+   "packets": 16
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x450276",
+   "packets": 16
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x450357",
+   "packets": 14
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4502B1",
+   "packets": 14
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4500F4",
+   "packets": 14
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D02B2",
+   "packets": 14
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E00E8",
+   "packets": 13
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x45030B",
+   "packets": 11
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x450362",
+   "packets": 10
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x45011B",
+   "packets": 10
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0275",
+   "packets": 10
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D013B",
+   "packets": 10
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D028A",
+   "packets": 9
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4501C8",
+   "packets": 6
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4500F7",
+   "packets": 6
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x45012A",
+   "packets": 5
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x450383",
+   "packets": 4
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x450071",
+   "packets": 4
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4502B2",
+   "packets": 3
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x450051",
+   "packets": 3
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0311",
+   "packets": 3
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D030D",
+   "packets": 3
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0237",
+   "packets": 3
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x4502E7",
+   "packets": 2
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E0090",
+   "packets": 2
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E0083",
+   "packets": 2
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0257",
+   "packets": 2
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D022E",
+   "packets": 2
+  },
+  {
+   "dir": "ServerToClient",
+   "client_value": "0x45024B",
+   "packets": 1
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E0136",
+   "packets": 1
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E0135",
+   "packets": 1
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3E007C",
+   "packets": 1
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0212",
+   "packets": 1
+  },
+  {
+   "dir": "ClientToServer",
+   "client_value": "0x3D0211",
+   "packets": 1
+  }
+ ]
+}

@@ -131,6 +131,14 @@ _TABLE_BUILDS = (69214, 69999)
 #         cat 0x120 ClientCASRefreshRemoteEntry -> SMSG_CAS_REFRESH_REMOTE_DATA
 #                   (Dice 1.00 at +2, 0.00 at +1)                        (+2)
 #       Wire check: 223 of 225 observed indices get a name, against 197 at +0.
+#       The first None-range (cat 0x039..0x03F) is closed as of the 0x45 wire
+#       sweep: client 0x45003D reads u32,u16 and sniffs 4 x 6 B = SMSG_STREAMING
+#       _MOVIES (vector<int16>), client 0x45003F reads u32 and sniffs 1 x 4 B =
+#       SMSG_STOP_TIMER (int32 Type) -- both +1, while client 0x450039 (two
+#       ObjectGuids) is SMSG_RECEIVE_PING_UNIT at +0.  The insertion therefore
+#       sits at client index 0x03B, a third ping variant added in 12.1.
+#       The second None-range (cat 0x11B..0x11D) is still open; client 0x45011C
+#       (guid,u32,guid,u32x3,u8,u8) is the candidate for the insertion there.
 #
 #   CMSG catalog 0x3B  constant +2 for the whole family. 45 of 45 observed
 #       indices named (35 at +0), and the names snap into place: client 0x031
@@ -201,7 +209,7 @@ def normalize_to_baseline(value):
 # Entry: catalog_family -> [(baseline_index_from, offset_or_None), ...] sorted.
 # None means "do not translate": the range is genuinely unresolved.
 INDEX_OFFSETS = {
-    0x42: [(0x000, 0), (0x039, None), (0x040, 1), (0x11B, None), (0x11E, 2)],
+    0x42: [(0x000, 0), (0x03B, 1), (0x11B, None), (0x11E, 2)],
     0x3B: [(0x000, 2)],
     0x3A: [(0x000, 0), (0x0F1, None), (0x105, -4), (0x2F6, None)],
 }
