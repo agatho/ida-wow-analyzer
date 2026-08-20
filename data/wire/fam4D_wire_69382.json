@@ -1,0 +1,3082 @@
+{
+ "build": "12.1.0.69382",
+ "image_base": "0x7FF780FD0000",
+ "family_client": "0x4D",
+ "family_catalog": "0x4A",
+ "direction": "SMSG (server -> client)",
+ "dispatcher": "0x64DF60",
+ "hook_table": "0x462DC60..0x462DCB8 (alle NULL, keine Registrierung im Retail-Client)",
+ "encoding": {
+  "endian": "little",
+  "guid": "packed (uint16 Maske, dann Nicht-Null-Bytes) == TrinityCore ByteBuffer<<ObjectGuid",
+  "bits": "MSB-first, Flush auf Bytegrenze vor jedem byte-alignten Read",
+  "string": "WriteBits(len, N); FlushBits(); WriteString(raw, len)  -- kein NUL auf dem Draht",
+  "dynstring": "WriteBits(len+1, 24); FlushBits(); raw bytes inkl. abschliessendem NUL",
+  "array": "uint32 Count an Deklarationsposition; Elementdaten danach (deferred), in Deklarationsreihenfolge"
+ },
+ "types": {
+  "C3Vector": {
+   "size": 12,
+   "fields": [
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "X"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "Y"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "Z"
+    }
+   ]
+  },
+  "C2Vector": {
+   "size": 8,
+   "fields": [
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "X"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "Y"
+    }
+   ]
+  },
+  "SpawnGroupData": {
+   "size": 48,
+   "reader": "inline 0x64A7D0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "array",
+     "name": "Points",
+     "elem_size": 12,
+     "of": "C3Vector"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field2"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field3"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field5"
+    },
+    {
+     "kind": "payload",
+     "of": "Points"
+    }
+   ]
+  },
+  "SpawnRegionData": {
+   "size": 32,
+   "reader": "inline 0x64A7D0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field1"
+    },
+    {
+     "kind": "array",
+     "name": "Groups",
+     "elem_size": 48,
+     "of": "SpawnGroupData"
+    },
+    {
+     "kind": "payload",
+     "of": "Groups"
+    }
+   ]
+  },
+  "JamClientAIBehaviorNode": {
+   "size": 400,
+   "reader": "0x64AA00",
+   "recursive": true,
+   "fields": [
+    {
+     "kind": "bits",
+     "name": "NameLen",
+     "width": 7,
+     "note": "Laenge von Name, Puffer 100"
+    },
+    {
+     "kind": "bits",
+     "name": "DescLen",
+     "width": 8,
+     "note": "Laenge von Desc, Puffer 256"
+    },
+    {
+     "kind": "field",
+     "type": "uint8",
+     "name": "Field356"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field360"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field364"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field368"
+    },
+    {
+     "kind": "array",
+     "name": "Children",
+     "elem_size": 400,
+     "of": "JamClientAIBehaviorNode"
+    },
+    {
+     "kind": "string",
+     "name": "Name",
+     "len_bits": 7,
+     "buffer": 100
+    },
+    {
+     "kind": "string",
+     "name": "Desc",
+     "len_bits": 8,
+     "buffer": 256
+    },
+    {
+     "kind": "payload",
+     "of": "Children"
+    }
+   ]
+  },
+  "JamClientAIBehaviorNodeRoot": {
+   "size": 168,
+   "reader": "0x64AB80",
+   "fields": [
+    {
+     "kind": "bits",
+     "name": "NameLen",
+     "width": 7,
+     "note": "Puffer 100"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field100"
+    },
+    {
+     "kind": "array",
+     "name": "Children",
+     "elem_size": 400,
+     "of": "JamClientAIBehaviorNode"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid1"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid2"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field160"
+    },
+    {
+     "kind": "string",
+     "name": "Name",
+     "len_bits": 7,
+     "buffer": 100
+    },
+    {
+     "kind": "payload",
+     "of": "Children"
+    }
+   ]
+  },
+  "JamClientAIBrainQueryResultTerm": {
+   "size": 72,
+   "reader": "inline 0x64ACA0",
+   "fields": [
+    {
+     "kind": "bits",
+     "name": "NameLen",
+     "width": 6,
+     "note": "Puffer 64"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field64"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field68"
+    },
+    {
+     "kind": "string",
+     "name": "Name",
+     "len_bits": 6,
+     "buffer": 64
+    }
+   ]
+  },
+  "JamClientAIBrainQueryResult": {
+   "size": 256,
+   "reader": "0x64ACA0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field12"
+    },
+    {
+     "kind": "array",
+     "name": "Terms",
+     "elem_size": 72,
+     "of": "JamClientAIBrainQueryResultTerm"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid48"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid64"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid80"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field96"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field100"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field104"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field108"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field112"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field116"
+    },
+    {
+     "kind": "field",
+     "type": "uint16",
+     "name": "Field120"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field252"
+    },
+    {
+     "kind": "payload",
+     "of": "Terms"
+    },
+    {
+     "kind": "bits",
+     "name": "TextLen",
+     "width": 7,
+     "note": "Puffer 128 @122"
+    },
+    {
+     "kind": "string",
+     "name": "Text",
+     "len_bits": 7,
+     "buffer": 128
+    }
+   ]
+  },
+  "JamClientAIBrainNeed": {
+   "size": 192,
+   "reader": "inline 0x64AF90",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field132"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field136"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field144"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field148"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid160"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field176"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field180"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field184"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field188"
+    },
+    {
+     "kind": "bits",
+     "name": "NameLen",
+     "width": 7,
+     "note": "Puffer 128 @4"
+    },
+    {
+     "kind": "bits",
+     "name": "Flag140",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag152",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag153",
+     "width": 1
+    },
+    {
+     "kind": "string",
+     "name": "Name",
+     "len_bits": 7,
+     "buffer": 128
+    }
+   ]
+  },
+  "JamClientAICombatPosNode": {
+   "size": 20,
+   "reader": "inline 0x64AF90",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field12"
+    },
+    {
+     "kind": "field",
+     "type": "uint16",
+     "name": "Field16"
+    }
+   ]
+  },
+  "JamClientAIBrainActivityScore": {
+   "size": 12,
+   "reader": "0x64AF10",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "field",
+     "type": "uint8",
+     "name": "Field8"
+    }
+   ]
+  },
+  "JamClientAIBrainActivity": {
+   "size": 80,
+   "reader": "inline 0x64AF90",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid0"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field36"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "call",
+     "name": "Score1",
+     "type": "JamClientAIBrainActivityScore"
+    },
+    {
+     "kind": "call",
+     "name": "Score2",
+     "type": "JamClientAIBrainActivityScore"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field68"
+    },
+    {
+     "kind": "bits",
+     "name": "Flag72",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag73",
+     "width": 1
+    }
+   ]
+  },
+  "JamClientAIStrategyTeamUnit": {
+   "size": 40,
+   "reader": "inline 0x64B730",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field20"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field24"
+    },
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field32"
+    }
+   ]
+  },
+  "JamClientAIStrategyUnit": {
+   "size": 32,
+   "reader": "inline 0x64B4B0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field20"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field24"
+    }
+   ]
+  },
+  "JamClientAIStrategyObjective": {
+   "size": 216,
+   "reader": "0x64B4B0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field24"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field156"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field160"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field164"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field168"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field172"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field176"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field180"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field184"
+    },
+    {
+     "kind": "array",
+     "name": "Units",
+     "elem_size": 32,
+     "of": "JamClientAIStrategyUnit"
+    },
+    {
+     "kind": "payload",
+     "of": "Units"
+    },
+    {
+     "kind": "bits",
+     "name": "NameLen",
+     "width": 7,
+     "note": "Puffer 128 @28"
+    },
+    {
+     "kind": "string",
+     "name": "Name",
+     "len_bits": 7,
+     "buffer": 128
+    }
+   ]
+  },
+  "JamClientAIStrategyTeam": {
+   "size": 120,
+   "reader": "inline 0x64B730",
+   "fields": [
+    {
+     "kind": "bits",
+     "name": "NameLen",
+     "width": 6,
+     "note": "Puffer 64 @0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field64"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field68"
+    },
+    {
+     "kind": "array",
+     "name": "TeamUnits",
+     "elem_size": 40,
+     "of": "JamClientAIStrategyTeamUnit"
+    },
+    {
+     "kind": "array",
+     "name": "Objectives",
+     "elem_size": 216,
+     "of": "JamClientAIStrategyObjective"
+    },
+    {
+     "kind": "string",
+     "name": "Name",
+     "len_bits": 6,
+     "buffer": 64
+    },
+    {
+     "kind": "payload",
+     "of": "TeamUnits"
+    },
+    {
+     "kind": "payload",
+     "of": "Objectives"
+    }
+   ]
+  },
+  "JamClientAIStrategyObjectiveAdvert": {
+   "size": 160,
+   "reader": "0x64B690",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field144"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field148"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field152"
+    },
+    {
+     "kind": "bits",
+     "name": "NameLen",
+     "width": 7,
+     "note": "Puffer 128 @16"
+    },
+    {
+     "kind": "string",
+     "name": "Name",
+     "len_bits": 7,
+     "buffer": 128
+    }
+   ]
+  },
+  "JamClientAIStrategyRegisteredObjective": {
+   "size": 184,
+   "reader": "inline 0x64B730",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field144"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field148"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field152"
+    },
+    {
+     "kind": "bits",
+     "name": "NameLen",
+     "width": 7,
+     "note": "Puffer 128 @16"
+    },
+    {
+     "kind": "string",
+     "name": "Name",
+     "len_bits": 7,
+     "buffer": 128
+    },
+    {
+     "kind": "array",
+     "name": "Adverts",
+     "elem_size": 160,
+     "of": "JamClientAIStrategyObjectiveAdvert"
+    },
+    {
+     "kind": "payload",
+     "of": "Adverts"
+    }
+   ]
+  },
+  "MoveHistoryEntry": {
+   "size": 32,
+   "reader": "inline 0x64C000",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "Field12"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "Field16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field20"
+    },
+    {
+     "kind": "field",
+     "type": "uint8",
+     "name": "Field24"
+    }
+   ]
+  },
+  "ClientAreaTriggerShape": {
+   "size": 120,
+   "reader": "0x64BAB0",
+   "note": "3x eingebettet in ClientAreaTriggerUpdate",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field12"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field20"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field24"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field28"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field36"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field44"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field48"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field52"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field56"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field60"
+    },
+    {
+     "kind": "array",
+     "name": "Points",
+     "elem_size": 8,
+     "of": "C2Vector"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field88"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field92"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field96"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid104"
+    },
+    {
+     "kind": "payload",
+     "of": "Points"
+    }
+   ]
+  },
+  "ClientAreaTriggerUpdateEvents": {
+   "size": 2056,
+   "reader": "inline 0x64BCB0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field2052"
+    },
+    {
+     "kind": "bits",
+     "name": "TextLen",
+     "width": 11,
+     "note": "Puffer 2048 @4"
+    },
+    {
+     "kind": "string",
+     "name": "Text",
+     "len_bits": 11,
+     "buffer": 2048
+    }
+   ]
+  },
+  "ClientAreaTriggerLocalSegment": {
+   "size": 72,
+   "reader": "inline 0x64BCB0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F1"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F2"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F3"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F4"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F5"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F6"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F7"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F9"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F10"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F11"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F12"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F13"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F14"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F15"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F17"
+    }
+   ]
+  },
+  "ClientAreaTriggerUpdate": {
+   "size": 456,
+   "reader": "0x64BCB0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field20"
+    },
+    {
+     "kind": "field",
+     "type": "uint8",
+     "name": "Field24"
+    },
+    {
+     "kind": "array",
+     "name": "Events",
+     "elem_size": 2056,
+     "of": "ClientAreaTriggerUpdateEvents"
+    },
+    {
+     "kind": "call",
+     "name": "Shape1",
+     "type": "ClientAreaTriggerShape"
+    },
+    {
+     "kind": "call",
+     "name": "Shape2",
+     "type": "ClientAreaTriggerShape"
+    },
+    {
+     "kind": "call",
+     "name": "Shape3",
+     "type": "ClientAreaTriggerShape"
+    },
+    {
+     "kind": "array",
+     "name": "Segments",
+     "elem_size": 72,
+     "of": "ClientAreaTriggerLocalSegment"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field440"
+    },
+    {
+     "kind": "payload",
+     "of": "Events"
+    },
+    {
+     "kind": "payload",
+     "of": "Segments"
+    },
+    {
+     "kind": "bits",
+     "name": "Flag444",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag445",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag446",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag447",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag448",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag449",
+     "width": 1
+    }
+   ]
+  },
+  "TargetGraphDebugTarget": {
+   "size": 48,
+   "reader": "0x64C280",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field24"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field28"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "bits",
+     "name": "HasField36",
+     "width": 1
+    },
+    {
+     "kind": "optional",
+     "has": "HasField36",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field36"
+      }
+     ]
+    }
+   ]
+  },
+  "TargetGraphDebugFilter": {
+   "size": 80,
+   "reader": "inline 0x64C350",
+   "fields": [
+    {
+     "kind": "call",
+     "name": "Target",
+     "type": "TargetGraphDebugTarget"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field52"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field72"
+    },
+    {
+     "kind": "bits",
+     "name": "Flag48",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag49",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasField56",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasField64",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag76",
+     "width": 1
+    },
+    {
+     "kind": "optional",
+     "has": "HasField56",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field56"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasField64",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field64"
+      }
+     ]
+    }
+   ]
+  },
+  "TargetGraphDebugNode": {
+   "size": 184,
+   "reader": "0x64C350",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field12"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field16"
+    },
+    {
+     "kind": "array",
+     "name": "TargetsA",
+     "elem_size": 48,
+     "of": "TargetGraphDebugTarget"
+    },
+    {
+     "kind": "array",
+     "name": "TargetsB",
+     "elem_size": 48,
+     "of": "TargetGraphDebugTarget"
+    },
+    {
+     "kind": "array",
+     "name": "Filters",
+     "elem_size": 80,
+     "of": "TargetGraphDebugFilter"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field100"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field104"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field108"
+    },
+    {
+     "kind": "payload",
+     "of": "TargetsA"
+    },
+    {
+     "kind": "payload",
+     "of": "TargetsB"
+    },
+    {
+     "kind": "payload",
+     "of": "Filters"
+    },
+    {
+     "kind": "bits",
+     "name": "Flag96",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasBlock112",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasField140",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasBlock148",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasBlock164",
+     "width": 1
+    },
+    {
+     "kind": "optional",
+     "has": "HasBlock112",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field112"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field116"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field120"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field124"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field128"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field132"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasField140",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field140"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasBlock148",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field148"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field152"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field156"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasBlock164",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field164"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field168"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field172"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field176"
+      }
+     ]
+    }
+   ]
+  },
+  "TargetGraphDebugEval": {
+   "size": 64,
+   "reader": "inline 0x64C890",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "array",
+     "name": "Nodes",
+     "elem_size": 184,
+     "of": "TargetGraphDebugNode"
+    },
+    {
+     "kind": "array",
+     "name": "Targets",
+     "elem_size": 48,
+     "of": "TargetGraphDebugTarget"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field56"
+    },
+    {
+     "kind": "payload",
+     "of": "Nodes"
+    },
+    {
+     "kind": "payload",
+     "of": "Targets"
+    }
+   ]
+  },
+  "AStarNodeData": {
+   "size": 28,
+   "reader": "0x64CAA0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field12"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field20"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field24"
+    }
+   ]
+  },
+  "PhaseShiftDataPhase": {
+   "size": 8,
+   "reader": "inline 0x73FF60",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "PhaseFlags"
+    },
+    {
+     "kind": "field",
+     "type": "uint16",
+     "name": "Id"
+    }
+   ]
+  },
+  "PhaseShiftData": {
+   "size": "var",
+   "reader": "0x73FF60",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "PhaseShiftFlags"
+    },
+    {
+     "kind": "array",
+     "name": "Phases",
+     "elem_size": 8,
+     "of": "PhaseShiftDataPhase"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "PersonalGuid"
+    },
+    {
+     "kind": "payload",
+     "of": "Phases"
+    }
+   ]
+  },
+  "JamDynamicValue": {
+   "size": 56,
+   "reader": "0x64CF70",
+   "variant": true,
+   "fields": [
+    {
+     "kind": "bits",
+     "name": "Tag",
+     "width": 4
+    },
+    {
+     "kind": "switch",
+     "on": "Tag",
+     "cases": {
+      "0,6,8": [
+       {
+        "kind": "field",
+        "type": "uint32",
+        "name": "AsUInt"
+       }
+      ],
+      "1": [
+       {
+        "kind": "field",
+        "type": "uint32",
+        "name": "AsInt"
+       }
+      ],
+      "2": [
+       {
+        "kind": "field",
+        "type": "uint32",
+        "name": "AsFloat"
+       }
+      ],
+      "3": [
+       {
+        "kind": "field",
+        "type": "float",
+        "name": "X"
+       },
+       {
+        "kind": "field",
+        "type": "float",
+        "name": "Y"
+       },
+       {
+        "kind": "field",
+        "type": "float",
+        "name": "Z"
+       }
+      ],
+      "4": [
+       {
+        "kind": "field",
+        "type": "ObjectGuid",
+        "name": "AsGuid"
+       }
+      ],
+      "5": [
+       {
+        "kind": "field",
+        "type": "uint32",
+        "name": "Lo"
+       },
+       {
+        "kind": "field",
+        "type": "uint32",
+        "name": "Hi"
+       }
+      ],
+      "7": [
+       {
+        "kind": "field",
+        "type": "uint32",
+        "name": "Value"
+       },
+       {
+        "kind": "field",
+        "type": "ObjectGuid",
+        "name": "Guid"
+       }
+      ],
+      "9": [
+       {
+        "kind": "dynstring",
+        "name": "AsString"
+       }
+      ],
+      "default": []
+     }
+    }
+   ]
+  },
+  "AIDebugKeyValueBlock": {
+   "size": 104,
+   "reader": "0x64D280",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "array",
+     "name": "Values",
+     "elem_size": 56,
+     "of": "JamDynamicValue"
+    },
+    {
+     "kind": "payload",
+     "of": "Values"
+    },
+    {
+     "kind": "bits",
+     "name": "HasGuid",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "TextLen",
+     "width": 24,
+     "note": "JamDynamicString: Laenge INKL. abschliessender NUL"
+    },
+    {
+     "kind": "bits",
+     "name": "HasField72",
+     "width": 1
+    },
+    {
+     "kind": "optional",
+     "has": "HasGuid",
+     "then": [
+      {
+       "kind": "field",
+       "type": "ObjectGuid",
+       "name": "Guid8"
+      }
+     ]
+    },
+    {
+     "kind": "dynstring",
+     "name": "Text"
+    },
+    {
+     "kind": "optional",
+     "has": "HasField72",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field72"
+      }
+     ]
+    }
+   ]
+  },
+  "DebugAuraEffectData": {
+   "size": 12,
+   "reader": "inline 0x64D420",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "field",
+     "type": "uint16",
+     "name": "Field8"
+    }
+   ]
+  },
+  "DebugAuraData": {
+   "size": 48,
+   "reader": "inline 0x64D420",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "array",
+     "name": "Effects",
+     "elem_size": 12,
+     "of": "DebugAuraEffectData"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field36"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field44"
+    },
+    {
+     "kind": "payload",
+     "of": "Effects"
+    }
+   ]
+  },
+  "DebugTimerBlock": {
+   "size": 72,
+   "reader": "0x64D660",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field28"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field48"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field52"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field56"
+    },
+    {
+     "kind": "bits",
+     "name": "HasField8",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasField20",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasField60",
+     "width": 1
+    },
+    {
+     "kind": "optional",
+     "has": "HasField8",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field8"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasField20",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field20"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasField60",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field60"
+      }
+     ]
+    }
+   ]
+  },
+  "DebugChargeBlock": {
+   "size": 20,
+   "reader": "0x64D800",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F4"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F12"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "F16"
+    }
+   ]
+  },
+  "DebugSpellCooldownData": {
+   "size": 152,
+   "reader": "inline 0x64D8B0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field4"
+    },
+    {
+     "kind": "call",
+     "name": "Cooldown",
+     "type": "DebugTimerBlock"
+    },
+    {
+     "kind": "call",
+     "name": "CategoryCooldown",
+     "type": "DebugTimerBlock"
+    }
+   ]
+  },
+  "DebugSpellChargeData": {
+   "size": 44,
+   "reader": "inline 0x64D8B0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field0"
+    },
+    {
+     "kind": "call",
+     "name": "A",
+     "type": "DebugChargeBlock"
+    },
+    {
+     "kind": "call",
+     "name": "B",
+     "type": "DebugChargeBlock"
+    }
+   ]
+  },
+  "DebugVec6": {
+   "size": 24,
+   "reader": "0x679EA0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "F0"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "F4"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "F8"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "F12"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "F16"
+    },
+    {
+     "kind": "field",
+     "type": "float",
+     "name": "F20"
+    }
+   ]
+  }
+ },
+ "messages": {
+  "0x4D0000": {
+   "name": "SMSG_AI_DEBUG_SPAWN_REGIONS",
+   "vtbl": "0x3BF2BE8",
+   "hook": "0x462DC88",
+   "case": "0x64DFEA",
+   "reader": "0x64A7D0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "array",
+     "name": "Regions",
+     "elem_size": 32,
+     "of": "SpawnRegionData"
+    },
+    {
+     "kind": "payload",
+     "of": "Regions"
+    }
+   ]
+  },
+  "0x4D0001": {
+   "name": "SMSG_AI_DEBUG_BEHAVIOR_NODE",
+   "vtbl": "0x3BF2B70",
+   "hook": "0x462DC68",
+   "case": "0x64E19C",
+   "reader": "inline + 0x64AB80",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "call",
+     "name": "Root",
+     "type": "JamClientAIBehaviorNodeRoot"
+    }
+   ]
+  },
+  "0x4D0002": {
+   "name": "SMSG_AI_DEBUG_BEHAVIOR_TREE",
+   "vtbl": "0x3BF2B48",
+   "hook": "0x462DC60",
+   "case": "0x64E245",
+   "reader": "0x64AF90",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field36"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field44"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field48"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field52"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field56"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field60"
+    },
+    {
+     "kind": "array",
+     "name": "QueryResults",
+     "elem_size": 256,
+     "of": "JamClientAIBrainQueryResult"
+    },
+    {
+     "kind": "array",
+     "name": "Needs",
+     "elem_size": 192,
+     "of": "JamClientAIBrainNeed"
+    },
+    {
+     "kind": "array",
+     "name": "CombatPositions",
+     "elem_size": 20,
+     "of": "JamClientAICombatPosNode"
+    },
+    {
+     "kind": "array",
+     "name": "Activities",
+     "elem_size": 80,
+     "of": "JamClientAIBrainActivity"
+    },
+    {
+     "kind": "array",
+     "name": "Nodes",
+     "elem_size": 168,
+     "of": "JamClientAIBehaviorNodeRoot"
+    },
+    {
+     "kind": "payload",
+     "of": "QueryResults"
+    },
+    {
+     "kind": "payload",
+     "of": "Needs"
+    },
+    {
+     "kind": "payload",
+     "of": "CombatPositions"
+    },
+    {
+     "kind": "payload",
+     "of": "Activities"
+    },
+    {
+     "kind": "payload",
+     "of": "Nodes"
+    },
+    {
+     "kind": "bits",
+     "name": "Flag64",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "TextLen",
+     "width": 7,
+     "note": "Puffer 128 @120"
+    },
+    {
+     "kind": "string",
+     "name": "Text",
+     "len_bits": 7,
+     "buffer": 128
+    }
+   ]
+  },
+  "0x4D0003": {
+   "name": "SMSG_AI_DEBUG_STRATEGY",
+   "vtbl": "0x3BF2B20",
+   "hook": "0x462DC80",
+   "case": "0x64E393",
+   "reader": "0x64B730",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field20"
+    },
+    {
+     "kind": "array",
+     "name": "Teams",
+     "elem_size": 120,
+     "of": "JamClientAIStrategyTeam"
+    },
+    {
+     "kind": "array",
+     "name": "RegisteredObjectives",
+     "elem_size": 184,
+     "of": "JamClientAIStrategyRegisteredObjective"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field72"
+    },
+    {
+     "kind": "payload",
+     "of": "Teams"
+    },
+    {
+     "kind": "payload",
+     "of": "RegisteredObjectives"
+    }
+   ]
+  },
+  "0x4D0004": {
+   "name": "SMSG_AI_DEBUG_AREATRIGGERS",
+   "vtbl": "0x3BF2BC0",
+   "hook": "0x462DC78",
+   "case": "0x64E539",
+   "reader": "0x64C000",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field24"
+    },
+    {
+     "kind": "array",
+     "name": "MoveHistory",
+     "elem_size": 32,
+     "of": "MoveHistoryEntry"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid56"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field76"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field80"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field84"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field88"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field92"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field96"
+    },
+    {
+     "kind": "array",
+     "name": "AreaTriggers",
+     "elem_size": 456,
+     "of": "ClientAreaTriggerUpdate"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field128"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field132"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field136"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid144"
+    },
+    {
+     "kind": "payload",
+     "of": "MoveHistory"
+    },
+    {
+     "kind": "payload",
+     "of": "AreaTriggers"
+    },
+    {
+     "kind": "bits",
+     "name": "Field72",
+     "width": 3
+    }
+   ]
+  },
+  "0x4D0005": {
+   "name": "SMSG_AI_DEBUG_TARGET_GRAPH",
+   "vtbl": "0x3BF2B98",
+   "hook": "0x462DC70",
+   "case": "0x64E6FC",
+   "reader": "0x64C890",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "array",
+     "name": "Evals",
+     "elem_size": 64,
+     "of": "TargetGraphDebugEval"
+    },
+    {
+     "kind": "payload",
+     "of": "Evals"
+    },
+    {
+     "kind": "bits",
+     "name": "Flag36",
+     "width": 1
+    }
+   ]
+  },
+  "0x4D0006": {
+   "name": "SMSG_AI_DEBUG_PATH",
+   "vtbl": "0x3BF2C88",
+   "hook": "0x462DCB0",
+   "case": "0x64E7EE",
+   "reader": "0x64CB60",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field36"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field44"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field48"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field52"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field64"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field68"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field72"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field76"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field80"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field84"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field88"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field92"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field96"
+    },
+    {
+     "kind": "array",
+     "name": "PathA",
+     "elem_size": 12,
+     "of": "C3Vector"
+    },
+    {
+     "kind": "array",
+     "name": "Ids",
+     "elem_size": 4,
+     "of": "uint32"
+    },
+    {
+     "kind": "array",
+     "name": "PathB",
+     "elem_size": 12,
+     "of": "C3Vector"
+    },
+    {
+     "kind": "array",
+     "name": "OpenNodes",
+     "elem_size": 28,
+     "of": "AStarNodeData"
+    },
+    {
+     "kind": "array",
+     "name": "ClosedNodes",
+     "elem_size": 28,
+     "of": "AStarNodeData"
+    },
+    {
+     "kind": "payload",
+     "of": "PathA"
+    },
+    {
+     "kind": "payload",
+     "of": "Ids"
+    },
+    {
+     "kind": "payload",
+     "of": "PathB"
+    },
+    {
+     "kind": "payload",
+     "of": "OpenNodes"
+    },
+    {
+     "kind": "payload",
+     "of": "ClosedNodes"
+    },
+    {
+     "kind": "bits",
+     "name": "Field56",
+     "width": 3
+    },
+    {
+     "kind": "bits",
+     "name": "Field60",
+     "width": 3
+    },
+    {
+     "kind": "bits",
+     "name": "TextLen",
+     "width": 7,
+     "note": "Puffer 128 @224"
+    },
+    {
+     "kind": "string",
+     "name": "Text",
+     "len_bits": 7,
+     "buffer": 128
+    }
+   ]
+  },
+  "0x4D0007": {
+   "name": "SMSG_AI_DEBUG_PHASE_SHIFT",
+   "vtbl": "0x3BF2C60",
+   "hook": "0x462DCA8",
+   "case": "0x64E93A",
+   "reader": "inline",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "call",
+     "name": "PhaseShift",
+     "type": "PhaseShiftData"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "FieldA"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "FieldB"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "FieldC"
+    }
+   ]
+  },
+  "0x4D0008": {
+   "name": "SMSG_AI_DEBUG_KEY_VALUES",
+   "vtbl": "0x3BF2CD8",
+   "hook": "0x462DCB8",
+   "case": "0x64EAAD",
+   "reader": "inline + 0x64D280",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field36"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "array",
+     "name": "Blocks",
+     "elem_size": 104,
+     "of": "AIDebugKeyValueBlock"
+    },
+    {
+     "kind": "payload",
+     "of": "Blocks",
+     "note": "direkt im Anschluss, kein Deferred"
+    }
+   ]
+  },
+  "0x4D0009": {
+   "name": "SMSG_AI_DEBUG_AURAS",
+   "vtbl": "0x3BF2CB0",
+   "hook": "0x462DCA0",
+   "case": "0x64EB2B",
+   "reader": "0x64D420",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field36"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "array",
+     "name": "Auras",
+     "elem_size": 48,
+     "of": "DebugAuraData"
+    },
+    {
+     "kind": "payload",
+     "of": "Auras"
+    }
+   ]
+  },
+  "0x4D000A": {
+   "name": "SMSG_AI_DEBUG_SPELL_COOLDOWNS",
+   "vtbl": "0x3BF2C38",
+   "hook": "0x462DC98",
+   "case": "0x64EBB3",
+   "reader": "0x64D8B0",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field36"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "array",
+     "name": "Cooldowns",
+     "elem_size": 152,
+     "of": "DebugSpellCooldownData"
+    },
+    {
+     "kind": "array",
+     "name": "Charges",
+     "elem_size": 44,
+     "of": "DebugSpellChargeData"
+    },
+    {
+     "kind": "payload",
+     "of": "Cooldowns"
+    },
+    {
+     "kind": "payload",
+     "of": "Charges"
+    }
+   ]
+  },
+  "0x4D000B": {
+   "name": "SMSG_AI_DEBUG_UNIT_STATE",
+   "vtbl": "0x3BF2C10",
+   "hook": "0x462DC90",
+   "case": "0x64EC70",
+   "reader": "0x64DA80",
+   "fields": [
+    {
+     "kind": "field",
+     "type": "uint64",
+     "name": "Field0"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field8"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid16"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field32"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field36"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field40"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field80"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field84"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field88"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field92"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field96"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field100"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field104"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field108"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field112"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field116"
+    },
+    {
+     "kind": "field",
+     "type": "uint32",
+     "name": "Field120"
+    },
+    {
+     "kind": "field",
+     "type": "ObjectGuid",
+     "name": "Guid168"
+    },
+    {
+     "kind": "bits",
+     "name": "HasVec44",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Field72",
+     "width": 3
+    },
+    {
+     "kind": "bits",
+     "name": "Field76",
+     "width": 4
+    },
+    {
+     "kind": "bits",
+     "name": "HasField124",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasField132",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "Flag140",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasBlock144",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasBlock156",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasVec184",
+     "width": 1
+    },
+    {
+     "kind": "bits",
+     "name": "HasVec212",
+     "width": 1
+    },
+    {
+     "kind": "optional",
+     "has": "HasVec44",
+     "then": [
+      {
+       "kind": "call",
+       "name": "Vec44",
+       "type": "DebugVec6"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasField124",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field124"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasField132",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field132"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasBlock144",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field144"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field148"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasBlock156",
+     "then": [
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field156"
+      },
+      {
+       "kind": "field",
+       "type": "uint32",
+       "name": "Field160"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasVec184",
+     "then": [
+      {
+       "kind": "call",
+       "name": "Vec184",
+       "type": "DebugVec6"
+      }
+     ]
+    },
+    {
+     "kind": "optional",
+     "has": "HasVec212",
+     "then": [
+      {
+       "kind": "call",
+       "name": "Vec212",
+       "type": "DebugVec6"
+      }
+     ]
+    }
+   ]
+  }
+ }
+}
