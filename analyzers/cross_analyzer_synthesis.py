@@ -599,8 +599,11 @@ def _build_handler_index(db, raw):
     index = {}
 
     for row in opcode_rows:
+        # DIRECTION: the client RECEIVES SMSG, so its handlers are SMSG.
+        # Keeping only CMSG emptied the index on 12.1.0.69382 and this analyzer
+        # silently returned 0.
         direction = row.get("direction", "")
-        if direction != "CMSG":
+        if direction not in ("CMSG", "SMSG", "unknown", ""):
             continue
         tc_name = row.get("tc_name")
         handler_ea = row.get("handler_ea")

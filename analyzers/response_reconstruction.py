@@ -678,7 +678,8 @@ def reconstruct_responses(session, system_filter=None):
 
     query = ("SELECT * FROM opcodes "
              "WHERE handler_ea IS NOT NULL "
-             "AND (direction = 'CMSG' OR direction = 'unknown')")
+             # DIRECTION: the client RECEIVES SMSG — see taint_analysis.
+             "AND direction IN ('CMSG','SMSG','unknown')")
     if system_filter:
         query += f" AND (tc_name LIKE '%{system_filter}%' OR jam_type LIKE '%{system_filter}%')"
     handlers = db.fetchall(query)

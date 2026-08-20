@@ -289,7 +289,10 @@ def transpile_all_handlers(session, system_filter=None):
     """
     db = session.db
 
-    query = "SELECT * FROM opcodes WHERE handler_ea IS NOT NULL AND direction = 'CMSG'"
+    # DIRECTION: the client RECEIVES SMSG, so its handlers are SMSG. Filtering
+    # to CMSG matched nothing on 12.1.0.69382 and this analyzer returned 0.
+    query = ("SELECT * FROM opcodes WHERE handler_ea IS NOT NULL "
+             "AND direction IN ('CMSG','SMSG','unknown')")
     params = ()
     if system_filter:
         query += " AND (tc_name LIKE ? OR jam_type LIKE ?)"

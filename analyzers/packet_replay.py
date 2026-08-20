@@ -33,8 +33,15 @@ def analyze_packet_replay(session, sniff_dir=None):
     db = session.db
     cfg = session.cfg
 
-    # Locate packet captures
+    # Locate packet captures.
+    # `sniff_dir` is a call parameter, but the run-loop wrapper invokes this
+    # analyzer as analyze_packet_replay(session) — so it was always None and the
+    # CONFIGURED sniff directory (cfg.sniff_dir, e.g. C:\sniff) was never
+    # searched. The analyzer then scanned only the dumps dir, found no capture
+    # that parses as a top-level list, and silently returned 0.
     search_dirs = []
+    if not sniff_dir:
+        sniff_dir = getattr(cfg, "sniff_dir", None)
     if sniff_dir:
         search_dirs.append(sniff_dir)
     if cfg.extraction_dir:
@@ -43,17 +50,31 @@ def analyze_packet_replay(session, sniff_dir=None):
     if pipeline_dir:
         search_dirs.append(pipeline_dir)
 
+    # Recursive: captures are normally filed in per-build/per-topic subfolders,
+    # and a flat os.listdir() missed all of them.
     capture_files = []
+    raw_pkt = 0
     for d in search_dirs:
         if not os.path.isdir(d):
             continue
-        for fname in os.listdir(d):
-            if fname.endswith((".pkt.sql", ".pkt.txt", ".json")):
-                capture_files.append(os.path.join(d, fname))
+        for root, _dirs, fnames in os.walk(d):
+            for fname in fnames:
+                if fname.endswith((".pkt.sql", ".pkt.txt", ".json")):
+                    capture_files.append(os.path.join(root, fname))
+                elif fname.endswith(".pkt"):
+                    raw_pkt += 1
 
     if not capture_files:
-        msg_info("No packet capture files found. "
-                 "Place .pkt.sql/.pkt.txt/.json in extraction directory.")
+        # Raw .pkt is WowPacketParser's BINARY format — deliberately not parsed
+        # here. Say so, instead of the generic "none found" that hid the real
+        # blocker (e.g. C:\sniff holds 57 raw .pkt and no exported capture).
+        extra = ""
+        if raw_pkt:
+            extra = (" Found %d raw .pkt capture(s), which are WowPacketParser's "
+                     "binary format — run them through WowPacketParser first to "
+                     "get .pkt.sql or .json." % raw_pkt)
+        msg_info("No parseable packet capture files found in %s.%s"
+                 % (", ".join(search_dirs) or "(no search dirs)", extra))
         return 0
 
     msg_info(f"Found {len(capture_files)} packet capture files")

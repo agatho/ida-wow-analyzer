@@ -217,7 +217,11 @@ def analyze_taint_flows(session, system_filter=None):
     db = session.db
 
     query = ("SELECT * FROM opcodes "
-             "WHERE direction = 'CMSG' AND handler_ea IS NOT NULL")
+             # DIRECTION: the client RECEIVES SMSG, so its handlers are SMSG.
+             # Filtering to CMSG matched nothing on 12.1.0.69382 and this
+             # analyzer silently returned 0.
+             "WHERE direction IN ('CMSG','SMSG','unknown') "
+             "AND handler_ea IS NOT NULL")
     if system_filter:
         query += (f" AND (tc_name LIKE '%{system_filter}%' "
                   f"OR jam_type LIKE '%{system_filter}%')")

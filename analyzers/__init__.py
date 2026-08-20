@@ -189,6 +189,20 @@ def run_all_analyzers(session):
         ("JAM Recovery", _run_jam_recovery),
         ("Update Fields", _run_update_fields),
         ("Handler-JAM Linking", _run_handler_jam_linking),
+        # OPCODE CHAIN — order is load-bearing (measured on 12.1.0.69382).
+        # `Opcode Dispatch Switch` is the ONLY producer of `opcodes.handler_ea`
+        # on this build (AutoDump's wow_opcode_dispatch is degenerate), and five
+        # analyzers below gate on `handler_ea IS NOT NULL`: Response
+        # Reconstruction, Taint Analysis, Protocol Sequencing, Pseudocode
+        # Transpiler, Cross-Analyzer Synthesis. With the dispatch analyzers
+        # sitting near the end of the list, all five ran against a NULL column
+        # and silently returned 0 — a full run "succeeded" with five empty
+        # analyzers. TC Opcode Xref moves up with them because it writes the
+        # `tc_opcodes_<build>.json` catalog the switch analyzer needs as its
+        # oracle (its own opcodes-table read is only a cross-ref statistic).
+        ("TC Opcode Xref", _run_tc_opcode_xref),
+        ("Opcode Dispatch Recovery", _run_opcode_dispatch_recovery),
+        ("Opcode Dispatch Switch", _run_opcode_dispatch_switch),
         # Quality enhancement analyzers
         ("DB2 Drift", _run_db2_drift),
         ("Validation Extractor", _run_validation_extractor),
@@ -221,7 +235,6 @@ def run_all_analyzers(session):
         ("JAM Metadata Apply", _run_jam_metadata_apply),
         ("JAM Caller Index", _run_jam_caller_index),
         ("JAM Type Discovery", _run_jam_type_discovery),
-        ("TC Opcode Xref", _run_tc_opcode_xref),
         ("Topic Deep Extractor", _run_topic_deep_extractor),
         ("Lua API Tag", _run_lua_api_tag),
         ("Hash Resolution", _run_hash_resolution),
@@ -252,7 +265,6 @@ def run_all_analyzers(session):
         # Graph & architecture
         ("Call Graph Analytics", _run_call_graph_analytics),
         ("Indirect Call Resolution", _run_indirect_call_resolver),
-        ("Opcode Dispatch Recovery", _run_opcode_dispatch_recovery),
         ("Event System Recovery", _run_event_system),
         # Semantic analysis
         ("Symbolic Constraints", _run_symbolic_constraints),
@@ -843,6 +855,12 @@ def _run_opcode_dispatch_recovery(session):
     from tc_wow_analyzer.analyzers.opcode_dispatch_recovery import (
         analyze_opcode_dispatch_recovery)
     return analyze_opcode_dispatch_recovery(session)
+
+
+def _run_opcode_dispatch_switch(session):
+    from tc_wow_analyzer.analyzers.opcode_dispatch_switch import (
+        analyze_opcode_dispatch_switch)
+    return analyze_opcode_dispatch_switch(session)
 
 
 def _run_indirect_call_resolver(session):
