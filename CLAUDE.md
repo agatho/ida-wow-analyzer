@@ -10,7 +10,7 @@ A WIP IDA Pro 9.3 plugin that extracts WoW client knowledge (opcodes, JAM wire t
 CVars, hashes, vtables, Lua bindings) into a SQLite store and TrinityCore-compatible C++ codegen.
 
 - **Hotkey**: Ctrl+Shift+W · **Menu**: Edit → TC WoW · **Entry**: `tc_wow_analyzer_plugin.py`
-- **71 registered analyzers** — authoritative list is the `analyzers = [...]` run loop at
+- **72 registered analyzers** — authoritative list is the `analyzers = [...]` run loop at
   `analyzers/__init__.py:178`, mirrored 1:1 by `REGISTRY` in `analyzers/registry.py`.
   `tests/static_checks.py` fails if the two drift apart. Do **not** count `.py` files
   (`_dbd_parser.py` etc. are helpers, not analyzers).

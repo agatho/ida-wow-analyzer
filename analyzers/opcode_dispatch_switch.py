@@ -73,6 +73,7 @@ from tc_wow_analyzer.core.jam_family import (  # noqa: F401  (re-exported)
     _switch_api, _cases_of, name_tokens, type_tokens, score_client_family,
     choose_catalog_family, _collect_family_switches, _func_typenames,
     _case_typenames, resolve_via_jam_typenames)
+from tc_wow_analyzer.core import wire_family_shift
 
 
 # RELIABILITY GATE.
@@ -630,17 +631,43 @@ def analyze_opcode_dispatch_switch(session):
     except Exception:
         pass
 
+    # internal_index stays the CATALOG value (that is what codegen and the TC
+    # side speak). wire_opcode has to be the value the client actually puts on
+    # the wire, which uses a different family byte — see core/wire_family_shift.
+    # Without this the sniff analyzers look up 0x420001 for a packet that says
+    # 0x450001 and never match anything.
+    fam_map = wire_family_shift.merge_family_map(
+        stats.get("family_map"), build)
+    if fam_map:
+        try:
+            path = wire_family_shift.save_family_map(
+                dumps_dir(), build, fam_map,
+                source=("jam_typenames+builtin"
+                        if stats.get("family_map") else "builtin_table"))
+            msg_info("  dispatch(switch): family map (%d families) -> %s"
+                     % (len(fam_map), os.path.basename(path)))
+        except Exception as exc:
+            msg_warn("  dispatch(switch): could not save family map (%s)" % exc)
+    else:
+        msg_warn("  dispatch(switch): no catalog->client family map for build "
+                 "%s — wire_opcode will stay NULL and sniff matching will not "
+                 "work for this build." % build)
+
     # write opcodes + collect artifact
     written = 0
     per_family = {}
     handlers_artifact = []
+    no_wire = 0
     for handler_ea, entries in handler_targets.items():
         for opcode, name, direction in entries:
+            wire = wire_family_shift.catalog_to_client(opcode, fam_map)
+            if wire is None:
+                no_wire += 1
             db.upsert_opcode(
                 direction=direction,
                 internal_index=opcode,
                 handler_ea=handler_ea,
-                wire_opcode=opcode,
+                wire_opcode=wire,
                 tc_name=name,
                 status="matched",
                 notes="dispatch_switch",
@@ -650,11 +677,16 @@ def analyze_opcode_dispatch_switch(session):
             per_family[opcode & 0xFFFF0000] = fam + 1
             handlers_artifact.append({
                 "opcode": "0x%X" % opcode,
+                "wire_opcode": ("0x%X" % wire) if wire is not None else None,
                 "tc_name": name,
                 "direction": direction,
                 "handler_rva": "0x%X" % cfg.ea_to_rva(handler_ea),
             })
     db.commit()
+    if no_wire:
+        msg_warn("  dispatch(switch): %d opcode(s) got no wire value — their "
+                 "catalog family has no proven client counterpart; left NULL "
+                 "on purpose." % no_wire)
 
     named = commented = 0
     try:

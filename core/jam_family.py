@@ -285,7 +285,7 @@ def resolve_via_jam_typenames(known_values, hb=None):
     """
     handler_targets = {}
     stats = {"client_families": 0, "mapped_families": 0, "opcodes": 0,
-             "unmapped": []}
+             "unmapped": [], "family_map": {}}
     switches = _collect_family_switches()
     stats["client_families"] = len(switches)
     if not switches:
@@ -313,6 +313,10 @@ def resolve_via_jam_typenames(known_values, hb=None):
             stats["unmapped"].append("0x%X(ambiguous)" % client_fam)
             continue
         stats["mapped_families"] += 1
+        # catalog family -> client family, from THIS binary. The opcode value we
+        # store as internal_index is the catalog one; the value on the wire uses
+        # the client family, and only this loop knows the pairing.
+        stats["family_map"][pick["family"]] = client_fam
         base = pick["family"] << 16
         msg_info("    client family 0x%X -> catalog 0x%X "
                  "(%.0f%% type-name match, runner-up %.0f%%, %d cases)"
