@@ -64,7 +64,13 @@ SHIFT_12_1 = {
     0x2F: (2, "wire"),   0x30: (2, "wire"),   0x31: (2, "interp"),
     0x32: (2, "interp"), 0x33: (2, "wire"),
     0x35: (None, "ambiguous: +2 or +3, never observed"),
-    0x37: (3, "wire"),   0x38: (3, "interp"), 0x39: (3, "interp"),
+    # 0x37/0x38/0x39 were +3 until the send-site fingerprint said otherwise --
+    # see "sendsite" above. The wire had three packets in this whole block and
+    # was satisfied by either offset; the gap structure is not.
+    # Consequence: client 0x3C carries no catalog family at all. That is the
+    # protocol inserted in 12.1, and it is why the shift steps to +3 right
+    # after 0x39.
+    0x37: (2, "sendsite"), 0x38: (2, "sendsite"), 0x39: (2, "sendsite"),
     0x3A: (3, "wire"),   0x3B: (3, "wire"),   0x3C: (3, "interp"),
     0x3D: (3, "wire"),   0x3E: (3, "wire"),   0x40: (3, "wire"),
     0x41: (3, "wire"),   0x42: (3, "wire"),   0x43: (3, "interp"),
