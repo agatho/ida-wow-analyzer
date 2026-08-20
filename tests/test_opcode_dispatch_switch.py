@@ -39,6 +39,17 @@ def _load_module():
         "tc_wow_analyzer.core.utils": utils,
         "tc_wow_analyzer.core.kv_keys": kvk,
     })
+    # The JAM family identification lives in core/jam_family.py (shared with
+    # analyzers/opcode_dispatcher.py) — load the REAL module, not a stub, since
+    # it is exactly the logic under test here.
+    jf_path = os.path.join(HERE, "..", "core", "jam_family.py")
+    jf_spec = importlib.util.spec_from_file_location(
+        "tc_wow_analyzer.core.jam_family", jf_path)
+    jf = importlib.util.module_from_spec(jf_spec)
+    sys.modules["tc_wow_analyzer.core.jam_family"] = jf
+    jf_spec.loader.exec_module(jf)
+    core.jam_family = jf
+
     spec = importlib.util.spec_from_file_location("ods_under_test", MOD)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -186,6 +197,30 @@ def run():
        ods.choose_catalog_family({0x00: ["ClientSetupCurrencyRecord"],
                                   0x01: ["JamEarnedAchievement"]},
                                  kv, [0x42, 0x3A]) is None)
+
+    # REGRESSION GUARD: analyzers/opcode_dispatcher.py used to assign
+    #     internal_index = dispatch_start + i   over  sorted(callees)
+    # i.e. opcode = address rank, which fabricated every row it wrote. The file
+    # must never regain an address-ordered opcode assignment.
+    import ast as _ast
+    disp_path = os.path.join(HERE, "..", "analyzers", "opcode_dispatcher.py")
+    disp_src = open(disp_path).read()
+    tree = _ast.parse(disp_src)
+    # AST, not text: the docstring deliberately quotes the old broken line.
+    code_names = {n.id for n in _ast.walk(tree) if isinstance(n, _ast.Name)}
+    ck("no dispatch_start/dispatch_count synthesis remains in code",
+       "dispatch_start" not in code_names and "dispatch_count" not in code_names)
+    fn = next(n for n in tree.body
+              if isinstance(n, _ast.FunctionDef)
+              and n.name == "analyze_opcode_dispatcher")
+    calls = {getattr(c.func, "attr", None) for c in _ast.walk(fn)
+             if isinstance(c, _ast.Call)}
+    ck("analyze_opcode_dispatcher writes no opcode rows",
+       "upsert_opcode" not in calls)
+    ck("analyze_opcode_dispatcher uses the shared JAM identification",
+       "choose_catalog_family" in {getattr(c.func, "id", None)
+                                   for c in _ast.walk(fn)
+                                   if isinstance(c, _ast.Call)})
 
     ok = all(p for _, p in checks)
     for label, p in checks:

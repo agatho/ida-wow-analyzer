@@ -13,7 +13,9 @@ import ida_segment
 import ida_xref
 import idautils
 
-from tc_wow_analyzer.core.utils import msg, msg_info, msg_warn, msg_error, ea_str
+from tc_wow_analyzer.core.utils import (
+    msg, msg_info, msg_warn, msg_error, ea_str, dumps_dir, current_build)
+from tc_wow_analyzer.core import kv_keys
 
 
 # ---------------------------------------------------------------------------
@@ -235,109 +237,135 @@ def _detect_dispatcher(session):
 
 
 def analyze_opcode_dispatcher(session):
-    """Find and analyze the main opcode dispatch table.
+    """Locate the client's per-family dispatchers and identify each family from
+    the client's OWN JAM message type names.
 
-    Strategy:
-      1. Check if opcodes were already imported from JSON
-      2. Use the known dispatcher RVA from config (if available)
-      3. Otherwise, auto-detect by finding functions with highest
-         call fan-out and largest switch tables
-      4. Extract handler pointers from the dispatch table
-      5. Map handlers to TrinityCore opcode names via string refs
+    REWRITTEN 2026-08-20 — the previous implementation fabricated opcodes
+    ---------------------------------------------------------------------
+    It collected the dispatcher's callees, sorted them by ADDRESS, and assigned
+
+        internal_index = dispatch_start + i          # i = address rank
+
+    Address rank has no relationship to opcode order, so every row it wrote was
+    invented. It looked plausible because the values landed inside a real family
+    range. Residue from that era is still visible in older databases as rows
+    tagged `dispatch_switch@<ea>` that place SMSG opcodes into CMSG family 0x40
+    with dozens of opcodes sharing one handler address.
+
+    It also early-outed whenever the `opcodes` table was non-empty, which hid the
+    fabrication behind "already in DB" — so on a populated database it silently
+    did nothing, and on a fresh one it silently invented. Both are gone.
+
+    WHAT IT DOES NOW
+    ----------------
+    Uses the shared, evidence-based identification in `core/jam_family.py`: find
+    every per-family switch dispatcher, read the `WowGetRawTypeName<...>` strings
+    its case bodies reference, and match those real message-type names against
+    the catalog's opcode names. A family is only accepted when the winner clears
+    an absolute match rate AND beats the runner-up — otherwise it is skipped, not
+    guessed.
+
+    This analyzer deliberately writes NO opcode rows: `opcode_dispatch_switch`
+    owns opcode->handler, and two writers could disagree. Here we persist the
+    DISPATCHER MAP, which is what this analyzer is actually good for:
+
+      * `known_rvas.family_dispatchers` (build-scoped) — client family -> RVA
+      * artifact `family_map_<build>.json` — client family, catalog family, delta,
+        evidence and case count, so each build's mapping is diffable against the
+        next one. Family numbers shift every build by design (JAM ids are assigned
+        in metadata order), so a per-build record is the thing worth keeping.
     """
     db = session.db
     cfg = session.cfg
+    build = current_build() or (cfg.build_number if cfg else 0)
 
-    # If opcodes were already imported, report the count
-    existing = db.count("opcodes")
-    if existing > 0:
-        msg_info(f"Opcode dispatcher: {existing} opcodes already in DB "
-                 f"(from JSON import)")
-        return existing
-
-    disp = cfg.dispatch_range
-
-    if not disp or not disp.get("count"):
-        msg_error("No dispatch range configured and no imported opcodes found")
+    try:
+        import idautils  # noqa: F401  (are we inside IDA?)
+    except Exception:
+        msg_warn("Opcode dispatcher: not inside IDA — skipping")
         return 0
 
-    dispatcher_rva = cfg.known_rvas.get("main_dispatcher")
-    if dispatcher_rva:
-        dispatcher_ea = cfg.rva_to_ea(dispatcher_rva)
-    else:
-        msg_info("No known dispatcher RVA configured — running auto-detection")
-        dispatcher_ea = _detect_dispatcher(session)
-        if not dispatcher_ea:
-            return 0
-    msg_info(f"Analyzing dispatcher at {ea_str(dispatcher_ea)}")
+    from tc_wow_analyzer.analyzers.opcode_dispatch_switch import load_opcode_oracle
+    from tc_wow_analyzer.core.jam_family import (
+        _collect_family_switches, _case_typenames, choose_catalog_family)
 
-    # Get the dispatcher function
-    func = ida_funcs.get_func(dispatcher_ea)
-    if not func:
-        msg_error(f"No function at dispatcher address {ea_str(dispatcher_ea)}")
+    known_values, _bases = load_opcode_oracle(session)
+    if not known_values:
+        msg_warn("Opcode dispatcher: no opcode catalog — run 'TC Opcode Xref' "
+                 "first; skipping (refusing to guess)")
         return 0
 
-    func_name = ida_name.get_name(func.start_ea)
-    msg_info(f"Dispatcher function: {func_name or ea_str(func.start_ea)} "
-             f"(size={func.size()})")
-
-    # Find all functions called by the dispatcher (these are the handlers)
-    callees = set()
-    for head in idautils.Heads(func.start_ea, func.end_ea):
-        for xref in idautils.XrefsFrom(head, 0):
-            if xref.type in (ida_xref.fl_CF, ida_xref.fl_CN, ida_xref.fl_JF, ida_xref.fl_JN):
-                target_func = ida_funcs.get_func(xref.to)
-                if target_func and target_func.start_ea != func.start_ea:
-                    callees.add(target_func.start_ea)
-
-    msg_info(f"Found {len(callees)} unique callee functions")
-
-    # Try to identify handler functions by looking for functions that
-    # call known deserializer patterns (WriteUInt32, etc.)
-    count = 0
-    # No 66xxx-era defaults (0x420000 / 891). A missing dispatch range means the
-    # importer never populated one, and inventing indices from an old build
-    # produced opcode rows that looked real and were not.
-    if not disp.get("start") or not disp.get("count"):
-        msg_error("Dispatch range incomplete (start/count missing) — refusing "
-                  "to synthesise opcode indices from stale defaults")
+    switches = _collect_family_switches()
+    if not switches:
+        msg_warn("Opcode dispatcher: no per-family switch dispatcher found")
         return 0
-    dispatch_start = int(disp["start"])
-    dispatch_count = int(disp["count"])
 
-    for i, callee_ea in enumerate(sorted(callees)):
-        callee_name = ida_name.get_name(callee_ea)
-        callee_rva = cfg.ea_to_rva(callee_ea)
+    catalog_families = sorted({v >> 16 for v in known_values})
+    cache = {}
+    mapping = []
+    dispatchers = {}
+    for client_fam, (disp_ea, cases) in sorted(switches.items()):
+        dispatchers["0x%X" % client_fam] = "0x%X" % cfg.ea_to_rva(disp_ea)
+        ordered = sorted(set(cases.values()))
+        idx_types = {}
+        for idx, tgt in cases.items():
+            t = _case_typenames(tgt, ordered, disp_ea, cache)
+            if t:
+                idx_types[idx] = t
+        pick = choose_catalog_family(idx_types, known_values, catalog_families)
+        if not pick:
+            continue
+        mapping.append({
+            "client_family": "0x%X" % client_fam,
+            "catalog_family": "0x%X" % pick["family"],
+            "delta": client_fam - pick["family"],
+            "dispatcher_rva": "0x%X" % cfg.ea_to_rva(disp_ea),
+            "cases": len(cases),
+            "match_rate": round(pick["rate"], 3),
+            "runner_up_rate": round(pick["runner_up_rate"], 3),
+            "evidence": "client JAM type names (%d/%d indices agree)"
+                        % (pick["hits"], pick["tested"]),
+        })
+        msg_info("  client family 0x%X -> catalog 0x%X (delta %+d, %.0f%% vs %.0f%%)"
+                 % (client_fam, pick["family"], client_fam - pick["family"],
+                    100.0 * pick["rate"], 100.0 * pick["runner_up_rate"]))
 
-        # Store as opcode handler
-        internal_index = dispatch_start + i
-        if i >= dispatch_count:
-            break
+    # build-scoped so a later build cannot inherit this build's addresses
+    try:
+        known = dict(cfg.known_rvas or {})
+        known["family_dispatchers"] = dispatchers
+        cfg.set_build_scoped("known_rvas", known)
+    except Exception as exc:
+        msg_warn("Opcode dispatcher: could not persist known_rvas (%s)" % exc)
 
-        # Try to determine TC name from existing function name
-        tc_name = None
-        status = "unknown"
-        if callee_name and not callee_name.startswith("sub_"):
-            # Existing names from enrichment pipeline
-            if callee_name.startswith("CMSG_") or "Handler" in callee_name:
-                tc_name = callee_name
-                status = "matched"
-            elif "Housing" in callee_name or "Neighborhood" in callee_name:
-                tc_name = callee_name
-                status = "matched"
+    deltas = sorted({m["delta"] for m in mapping})
+    payload = {
+        "type": "family_map",
+        "build": build,
+        "note": ("JAM protocol/message ids are assigned in metadata order (Rumsey, "
+                 "GDC 2013), so family numbers shift whenever a protocol is "
+                 "inserted. This records THIS build's mapping."),
+        "observed_deltas": deltas,
+        "client_dispatchers": dispatchers,
+        "families": mapping,
+    }
+    try:
+        out = os.path.join(dumps_dir(), "family_map_%s.json" % build)
+        with open(out, "w") as fh:
+            json.dump(payload, fh, indent=1)
+        msg_info("Opcode dispatcher: wrote %s" % out)
+    except Exception as exc:
+        msg_warn("Opcode dispatcher: could not write family map (%s)" % exc)
 
-        db.upsert_opcode(
-            direction="CMSG",
-            internal_index=internal_index,
-            handler_ea=callee_ea,
-            tc_name=tc_name,
-            status=status,
-        )
-        count += 1
+    try:
+        db.kv_set(kv_keys.AUTO_DETECTED_DISPATCHER, payload)
+    except Exception:
+        pass
 
-    db.commit()
-    msg_info(f"Stored {count} CMSG handler entries")
-    return count
+    msg_info("Opcode dispatcher: %d dispatchers found, %d families identified "
+             "from client type names (deltas %s)"
+             % (len(switches), len(mapping), deltas or "n/a"))
+    return len(mapping)
 
 
 def analyze_handler_jam_types(session):

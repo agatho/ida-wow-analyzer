@@ -34,7 +34,7 @@ REGISTRY = [
     AnalyzerInfo("VTables",                 "core",        kv_keys.VTABLE_ANALYSIS,    "vtables"),
     AnalyzerInfo("DB2 Metadata",            "core",        None,                       "db2_tables"),
     AnalyzerInfo("DB2 LoadInfo Codegen",    "codegen",     "db2_loadinfo_codegen",     None),
-    AnalyzerInfo("Opcode Dispatcher",       "core",        "auto_detected_dispatcher", "opcodes"),
+    AnalyzerInfo("Opcode Dispatcher",       "core",        "auto_detected_dispatcher", None),
     AnalyzerInfo("JAM Recovery",            "core",        None,                       "jam_types"),
     AnalyzerInfo("Update Fields",           "core",        None,                       "update_fields"),
     AnalyzerInfo("Handler-JAM Linking",     "core",        None,                       "opcodes"),
@@ -100,6 +100,7 @@ REGISTRY = [
     AnalyzerInfo("Call Graph Analytics",    "graph",       "call_graph_analytics",     None),
     AnalyzerInfo("Indirect Call Resolution","graph",       "indirect_calls",           None),
     AnalyzerInfo("Opcode Dispatch Recovery","graph",       kv_keys.OPCODE_DISPATCH_CANDIDATES, "opcodes"),
+    AnalyzerInfo("Opcode Dispatch Switch",  "graph",       kv_keys.OPCODE_DISPATCH_SWITCH,     "opcodes"),
     AnalyzerInfo("Event System Recovery",   "graph",       "event_system",             None),
     # ── Semantic analysis ──
     AnalyzerInfo("Symbolic Constraints",    "semantic",    "symbolic_constraints",     None),
