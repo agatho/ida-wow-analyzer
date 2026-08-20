@@ -103,20 +103,72 @@ _TABLE_BUILDS = (69214, 69999)
 #       in range) rather than CMSG_QUEST_CONFIRM_ACCEPT, client 0x0CA with 1211
 #       packets is CMSG_SET_SELECTION, client 0x08A is CMSG_GAME_OBJ_REPORT_USE.
 #
-#   CMSG catalog 0x3A  UNRESOLVED above index 0x0FF. Below it, 21 of 21 observed
-#       indices are named at +0 (the whole loot cluster lands correctly). Above
-#       it no offset wins: +0 names CMSG_ADD_TOY for 1045 packets, +4 names
-#       CMSG_SPELL_EMPOWER_RELEASE/RESTART for a 2386/2294 pair -- both partly
-#       plausible, neither supported by type names (send sites carry none).
-#       So that half of the family is left out. TrinityCore's own catalog claims
-#       +4 from index 0x86, which the wire refutes outright.
+#   CMSG catalog 0x3A  one DELETION, not an insertion: -4 from index 0x105.
+#       Send sites carry no JAM type names, so the evidence here is the client's
+#       own send immediates -- every CMSG opcode appears as a 32-bit constant in
+#       .text, 327 distinct values for this family. Aligning the catalog's 270
+#       indices against that set (monotone, offsets -4..+8) puts 270 of 270 on a
+#       real immediate, and the boundary is pinned by four indices that exist at
+#       -4 and NOT at +0 (cat 0x105 REQUEST_VEHICLE_SWITCH_SEAT, 0x106, 0x107,
+#       0x10C) against cat 0x0F0 which exists at +0 and not at -4.
+#       The method was validated first on a family whose answer was already
+#       known: CMSG 0x3B comes out at exactly +2, 177 of 177.
+#       Wire check: 61 of 65 observed indices named, 100.0% of packets, and the
+#       names are a coherent questing session -- CMSG_QUERY_GAME_OBJECT 3485,
+#       CMSG_QUERY_CREATURE 3003, CMSG_QUERY_QUEST_INFO 1410, CMSG_CAST_SPELL
+#       1223, and CMSG_ATTACK_SWING / CMSG_ATTACK_STOP as a 188/185 pair.
+#       Cross-family proof: CMSG_LOOT_RELEASE lands on 196 packets and
+#       SMSG_LOOT_RESPONSE (other family, other offset) on exactly 196 too.
+#       Still open: cat 0x0F1..0x104 (three vehicle opcodes, immediate present
+#       at both offsets) and cat >= 0x2F6 (tail, evidence points at +7 but rests
+#       on four indices).
+#       TrinityCore's own catalog claims +4 from index 0x86 -- wrong on both the
+#       sign and the boundary.
 #
-# Entry: catalog_family -> [(catalog_index_from, offset_or_None), ...] sorted.
+# WHICH CATALOG THESE INDICES ARE COUNTED IN
+# The offsets below are measured against WowPacketParser's V12_0_7_67808 table,
+# because that is the numbering the 12.1 wire actually fits. Our own
+# tc_opcodes_<build>.json disagrees with it for 238 names -- and where the wire
+# can arbitrate, WowPacketParser is right. The big one is CMSG family 0x3A,
+# where our catalog adds +4 to every index from 0x86 up; the wire refutes it
+# (0x086..0x0FF is demonstrably unshifted). So a value coming out of our own
+# catalog has to be normalised to the baseline first, or the two corrections
+# stack and land four messages away.
+#
+# catalog_family -> (from_baseline_index, delta_our_catalog_minus_baseline)
+CATALOG_DEVIATIONS = {
+    0x3A: (0x086, 4),
+}
+
+
+def normalize_to_baseline(value):
+    """Our catalog's opcode value -> the same message in the baseline numbering.
+
+    Only family 0x3A is corrected: it is the one deviation the wire settles, and
+    it is large (221 names). The four small ones (CMSG 0x30 and 0x40, SMSG 0x49
+    and 0x51, 17 names between them) are left alone because nothing observed
+    tells us which side is right -- their wire values may be off by one and are
+    flagged as such rather than silently "fixed".
+    """
+    if value is None:
+        return None
+    fam = (value >> 16) & 0xFFFF
+    dev = CATALOG_DEVIATIONS.get(fam)
+    if not dev:
+        return value
+    from_idx, delta = dev
+    idx = value & 0xFFFF
+    if idx >= from_idx + delta:
+        idx -= delta
+    return (fam << 16) | idx
+
+
+# Entry: catalog_family -> [(baseline_index_from, offset_or_None), ...] sorted.
 # None means "do not translate": the range is genuinely unresolved.
 INDEX_OFFSETS = {
     0x42: [(0x000, 0), (0x039, None), (0x040, 1), (0x11B, None), (0x11E, 2)],
     0x3B: [(0x000, 2)],
-    0x3A: [(0x000, 0), (0x100, None)],
+    0x3A: [(0x000, 0), (0x0F1, None), (0x105, -4), (0x2F6, None)],
 }
 
 
@@ -156,7 +208,7 @@ def provenance(catalog_family):
     return entry[1] if entry else "unknown"
 
 
-def catalog_to_client(value, family_map):
+def catalog_to_client(value, family_map, normalize=True):
     """Catalog opcode value -> value on the wire. None when it is not settled.
 
     Never guesses. Returns None both when the family has no proven client
@@ -170,6 +222,8 @@ def catalog_to_client(value, family_map):
     client_fam = family_map.get(fam)
     if client_fam is None:
         return None
+    if normalize:
+        value = normalize_to_baseline(value)
     idx = value & 0xFFFF
     off = index_offset(fam, idx)
     if off is None:
@@ -189,8 +243,10 @@ def client_to_catalog(value, family_map):
         plan = INDEX_OFFSETS.get(cat_fam)
         if not plan:
             return ((cat_fam & 0xFFFF) << 16) | idx
-        # invert: find the catalog index whose forward map lands on idx
-        for cand in range(max(0, idx - 8), idx + 1):
+        # Invert by search: offsets can be negative (a deleted message pulls
+        # every later id down), so the catalog index may sit either side of the
+        # wire index. Widest offset in the table is +/- 8.
+        for cand in range(max(0, idx - 8), idx + 9):
             off = index_offset(cat_fam, cand)
             if off is not None and cand + off == idx:
                 return ((cat_fam & 0xFFFF) << 16) | cand
