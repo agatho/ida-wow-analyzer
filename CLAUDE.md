@@ -5,6 +5,17 @@
 > started here is a *separate project with empty memory* and will not see that context unless you read it.
 > **Don't rebuild functionality from scratch — extend the existing analyzers.** (This already happened once.)
 
+## Opcode-Implementierungsplan (12.1.0.69382)
+
+Die Vorarbeit fuer die **473 in TrinityCore unimplementierten Opcodes** liegt in
+**`c:\dumps\implementierungsplan_69382\`** — Einstieg: `00_START_HIER.md`, davor
+`DEFINITION_OF_DONE_pro_opcode.md` (wann ein Opcode als fertig gilt).
+
+Werkzeuge und Wire-Daten dazu liegen **hier im Repo**: `tools/` (IDA-Dumper + lokale
+Auswerter, `tools/README.md` beschreibt die Pipeline) und `data/wire/` (Wire-Specs,
+Hook-Handler-Karte, Familienversatz). Die Primitiven-RVAs dieses Builds stehen in
+`tools/README.md`, mit Beweis in `BEFUND_wire_primitiven_69382.md` im Planordner.
+
 ## What this is
 A WIP IDA Pro 9.3 plugin that extracts WoW client knowledge (opcodes, JAM wire types, DB2 schemas, RTTI,
 CVars, hashes, vtables, Lua bindings) into a SQLite store and TrinityCore-compatible C++ codegen.
