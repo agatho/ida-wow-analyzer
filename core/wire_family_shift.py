@@ -36,6 +36,10 @@ agreed with zero contradictions:
           against catalog opcode names (see core/jam_family.py).
   "interp" not observed itself, but both neighbours are proven with the same
           shift and the shift is monotone non-decreasing, so it is forced.
+  "ghidra" a second, independent decompiler (Ghidra 12.0.2 headless) found the
+          family's receive dispatcher and its switch cases where our IDA pass
+          had not looked. Its 535 recovered case values across 13 shared
+          dispatchers are identical to IDA's, 0 discrepancies.
 
 Two families stay deliberately unmapped: 0x2E (+1 or +2) and 0x35 (+2 or +3) are
 never seen on the wire and carry no JAM type names. Six housing CMSGs are
@@ -63,10 +67,17 @@ SHIFT_12_1 = {
     0x41: (3, "wire"),   0x42: (3, "wire"),   0x43: (3, "interp"),
     0x46: (3, "wire"),   0x47: (3, "wire"),   0x48: (3, "wire"),
     0x49: (3, "wire"),   0x4C: (3, "wire"),   0x4E: (3, "wire"),
-    0x50: (4, "wire"),   0x51: (4, "wire"),   0x52: (4, "interp"),
-    0x53: (4, "interp"), 0x54: (4, "wire"),   0x55: (4, "interp"),
+    0x50: (4, "wire"),   0x51: (4, "wire"),   0x52: (4, "ghidra"),
+    0x53: (4, "ghidra"), 0x54: (4, "wire"),   0x55: (4, "ghidra"),
     0x56: (4, "wire"),   0x58: (4, "wire"),   0x5A: (4, "wire"),
     0x5B: (4, "jam"),    0x5C: (4, "jam"),
+    # 0x52 / 0x53 / 0x55 were interpolated until Ghidra turned up their
+    # dispatchers at client 0x56 / 0x57 / 0x59 -- families our IDA sweep had
+    # missed entirely. Monotonicity and injectivity pin them between the fixed
+    # points 0x55->0x51 and 0x58->0x54 (and 0x58->0x54, 0x5A->0x56), and the
+    # case counts land exactly: 8 == 8 for both 0x52 and 0x53.
+    # Client 0x4D maps to catalog 0x4A the same way -- a 12-message protocol
+    # that WowPacketParser's table does not name at all.
     0x5E: (5, "wire"),   0x5F: (5, "wire"),   0x60: (5, "wire"),
     0x62: (5, "wire"),   0x63: (5, "wire"),   0x65: (5, "interp"),
 }
