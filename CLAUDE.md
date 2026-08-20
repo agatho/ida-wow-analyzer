@@ -11,6 +11,12 @@ Die Vorarbeit fuer die **473 in TrinityCore unimplementierten Opcodes** liegt in
 **`c:\dumps\implementierungsplan_69382\`** — Einstieg: `00_START_HIER.md`, davor
 `DEFINITION_OF_DONE_pro_opcode.md` (wann ein Opcode als fertig gilt).
 
+Zwei Regeln, die dort begruendet sind und leicht falsch gemacht werden:
+**Alle Opcodes werden verwendet** — ein Teil nur in der Entwicklerfassung des Clients. Ein
+NULL-Hook heisst "kein Registrar in *dieser* Fassung", nicht "unbenutzt".
+Und: eine Paketaufnahme kann eine Struktur **bestaetigen, nie widerlegen** — fehlt ein System
+in unseren Aufnahmen, war nur nie ein Charakter in dieser Lage.
+
 Werkzeuge und Wire-Daten dazu liegen **hier im Repo**: `tools/` (IDA-Dumper + lokale
 Auswerter, `tools/README.md` beschreibt die Pipeline) und `data/wire/` (Wire-Specs,
 Hook-Handler-Karte, Familienversatz). Die Primitiven-RVAs dieses Builds stehen in
